@@ -72,3 +72,5 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
+context/
+node_modules/
