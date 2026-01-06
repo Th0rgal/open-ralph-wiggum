@@ -225,6 +225,9 @@ async function runRalphLoop(): Promise<void> {
   console.log("Starting loop... (Ctrl+C to stop)");
   console.log("═".repeat(68));
 
+  // Track current subprocess for cleanup on SIGINT
+  let currentProc: ReturnType<typeof Bun.spawn> | null = null;
+
   // Set up signal handler for graceful shutdown
   let stopping = false;
   process.on("SIGINT", () => {
@@ -234,6 +237,16 @@ async function runRalphLoop(): Promise<void> {
     }
     stopping = true;
     console.log("\nGracefully stopping Ralph loop...");
+
+    // Kill the subprocess if it's running
+    if (currentProc) {
+      try {
+        currentProc.kill();
+      } catch {
+        // Process may have already exited
+      }
+    }
+
     clearState();
     console.log("Loop cancelled.");
     process.exit(0);
@@ -265,13 +278,15 @@ async function runRalphLoop(): Promise<void> {
       cmdArgs.push(fullPrompt);
 
       // Run opencode using spawn for better argument handling
-      const proc = Bun.spawn(["opencode", ...cmdArgs], {
+      currentProc = Bun.spawn(["opencode", ...cmdArgs], {
         stdout: "pipe",
         stderr: "pipe",
       });
+      const proc = currentProc;
 
       const result = await new Response(proc.stdout).text();
       const stderr = await new Response(proc.stderr).text();
+      currentProc = null; // Clear reference after subprocess completes
 
       if (stderr) {
         console.error(stderr);
