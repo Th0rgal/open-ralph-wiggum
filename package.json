@@ -1,0 +1,27 @@
+{
+  "name": "opencode-ralph-wiggum",
+  "version": "1.0.0",
+  "description": "Ralph Wiggum technique for OpenCode - iterative AI development loops",
+  "type": "module",
+  "bin": {
+    "ralph": "./ralph.ts"
+  },
+  "scripts": {
+    "start": "bun ralph.ts",
+    "build": "bun build ralph.ts --outfile bin/ralph --compile",
+    "test": "bun test ./tests/ralph.test.ts",
+    "install-local": "bun link"
+  },
+  "keywords": [
+    "opencode",
+    "ai",
+    "ralph-wiggum",
+    "iterative-development",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bun": "^1.3.5"
+  }
+}
