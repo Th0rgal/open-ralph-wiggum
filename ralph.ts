@@ -29,7 +29,6 @@ Options:
   --max-iterations N  Maximum iterations before stopping (default: unlimited)
   --completion-promise TEXT  Phrase that signals completion (default: COMPLETE)
   --model MODEL       Model to use (e.g., anthropic/claude-sonnet)
-  --continue-session  Continue the last session instead of starting fresh
   --no-commit         Don't auto-commit after each iteration
   --version, -v       Show version
   --help, -h          Show this help
@@ -64,7 +63,6 @@ let prompt = "";
 let maxIterations = 0; // 0 = unlimited
 let completionPromise = "COMPLETE";
 let model = "";
-let continueSession = false;
 let autoCommit = true;
 
 const promptParts: string[] = [];
@@ -93,8 +91,6 @@ for (let i = 0; i < args.length; i++) {
       process.exit(1);
     }
     model = val;
-  } else if (arg === "--continue-session") {
-    continueSession = true;
   } else if (arg === "--no-commit") {
     autoCommit = false;
   } else if (!arg.startsWith("-")) {
@@ -123,7 +119,6 @@ interface RalphState {
   prompt: string;
   startedAt: string;
   model: string;
-  sessionId?: string;
 }
 
 // Create or update state
@@ -257,18 +252,11 @@ async function runRalphLoop(): Promise<void> {
     // Build the prompt
     const fullPrompt = buildPrompt(state);
 
-    // Build opencode command
-    const modelArg = model ? ["-m", model] : [];
-    const continueArg = continueSession && state.sessionId ? ["-s", state.sessionId] : [];
-
     try {
       // Build command arguments
       const cmdArgs = ["run"];
       if (model) {
         cmdArgs.push("-m", model);
-      }
-      if (continueSession && state.sessionId) {
-        cmdArgs.push("-s", state.sessionId);
       }
       cmdArgs.push(fullPrompt);
 
