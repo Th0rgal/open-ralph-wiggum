@@ -78,4 +78,5 @@ node_modules/
 .opencode/ralph-opencode.no-plugins.json
 
 # Build artifacts
-bin/
+bin/*
+!bin/ralph
