@@ -5,7 +5,7 @@
   "type": "module",
   "main": ".opencode/plugin/ralph-wiggum.ts",
   "bin": {
-    "ralph": "./ralph.ts"
+    "ralph": "./cli/ralph.js"
   },
   "scripts": {
     "start": "bun ralph.ts",
@@ -13,6 +13,18 @@
     "test": "bun test ./tests/ralph.test.ts",
     "install-local": "bun link"
   },
+  "files": [
+    "cli/",
+    "ralph.ts",
+    ".opencode/command/",
+    ".opencode/plugin/",
+    "README.md",
+    "LICENSE",
+    "install.sh",
+    "install.ps1",
+    "uninstall.sh",
+    "uninstall.ps1"
+  ],
   "dependencies": {
     "@opencode-ai/plugin": "1.0.223"
   },
