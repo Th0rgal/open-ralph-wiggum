@@ -966,9 +966,14 @@ async function runRalphLoop(): Promise<void> {
         history.struggleIndicators.shortIterations = 0; // Reset on normal-length iteration
       }
 
-      for (const error of errors) {
-        const key = error.substring(0, 100);
-        history.struggleIndicators.repeatedErrors[key] = (history.struggleIndicators.repeatedErrors[key] || 0) + 1;
+      if (errors.length === 0) {
+        // Reset error tracking when iteration has no errors (issue resolved)
+        history.struggleIndicators.repeatedErrors = {};
+      } else {
+        for (const error of errors) {
+          const key = error.substring(0, 100);
+          history.struggleIndicators.repeatedErrors[key] = (history.struggleIndicators.repeatedErrors[key] || 0) + 1;
+        }
       }
 
       saveHistory(history);
