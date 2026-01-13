@@ -45,6 +45,8 @@ done
 | **Persistence** | Walk away, come back to completed work |
 | **Iteration** | Complex tasks broken into incremental progress |
 | **Automation** | No babysitting—loop handles retries |
+| **Observability** | Monitor progress with `--status`, see history and struggle indicators |
+| **Mid-Loop Guidance** | Inject hints with `--add-context` without stopping the loop |
 
 ## Installation
 
@@ -94,7 +96,7 @@ ralph "Build a REST API for todos with CRUD operations and tests. \
 
 ## Commands
 
-### CLI
+### Running a Loop
 
 ```bash
 ralph "<prompt>" [options]
@@ -110,6 +112,63 @@ Options:
   --no-commit              Don't auto-commit after iterations
   --help                   Show help
 ```
+
+### Monitoring & Control
+
+```bash
+# Check status of active loop (run from another terminal)
+ralph --status
+
+# Add context/hints for the next iteration
+ralph --add-context "Focus on fixing the auth module first"
+
+# Clear pending context
+ralph --clear-context
+```
+
+### Status Dashboard
+
+The `--status` command shows:
+- **Active loop info**: Current iteration, elapsed time, prompt
+- **Pending context**: Any hints queued for next iteration
+- **Iteration history**: Last 5 iterations with tools used, duration
+- **Struggle indicators**: Warnings if agent is stuck (no progress, repeated errors)
+
+```
+╔══════════════════════════════════════════════════════════════════╗
+║                    Ralph Wiggum Status                           ║
+╚══════════════════════════════════════════════════════════════════╝
+
+🔄 ACTIVE LOOP
+   Iteration:    3 / 10
+   Elapsed:      5m 23s
+   Promise:      COMPLETE
+   Prompt:       Build a REST API...
+
+📊 HISTORY (3 iterations)
+   Total time:   5m 23s
+
+   Recent iterations:
+   🔄 #1: 2m 10s | Bash:5 Write:3 Read:2
+   🔄 #2: 1m 45s | Edit:4 Bash:3 Read:2
+   🔄 #3: 1m 28s | Bash:2 Edit:1
+
+⚠️  STRUGGLE INDICATORS:
+   - No file changes in 3 iterations
+   💡 Consider using: ralph --add-context "your hint here"
+```
+
+### Mid-Loop Context Injection
+
+Guide a struggling agent without stopping the loop:
+
+```bash
+# In another terminal while loop is running
+ralph --add-context "The bug is in utils/parser.ts line 42"
+ralph --add-context "Try using the singleton pattern for config"
+```
+
+Context is automatically consumed after one iteration.
 
 ## Troubleshooting
 
@@ -218,12 +277,19 @@ ralph "Your task" --max-iterations 20
 
 ```
 ralph-wiggum/
-├── bin/ralph.js                  # CLI entrypoint
-├── ralph.ts                      # CLI loop script
+├── bin/ralph.js                  # CLI entrypoint (npm wrapper)
+├── ralph.ts                      # Main loop implementation
 ├── package.json                  # Package config
-├── install.sh                    # Installation script
-└── uninstall.sh                  # Uninstallation script
+├── install.sh / install.ps1     # Installation scripts
+└── uninstall.sh / uninstall.ps1 # Uninstallation scripts
 ```
+
+### State Files (in .opencode/)
+
+During operation, Ralph stores state in `.opencode/`:
+- `ralph-loop.state.json` - Active loop state
+- `ralph-history.json` - Iteration history and metrics
+- `ralph-context.md` - Pending context for next iteration
 
 ## Uninstall
 

@@ -10,7 +10,13 @@ import { $ } from "bun";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "fs";
 import { join } from "path";
 
-const VERSION = "1.0.6";
+const VERSION = "1.0.7";
+
+// Context file path for mid-loop injection
+const stateDir = join(process.cwd(), ".opencode");
+const statePath = join(stateDir, "ralph-loop.state.json");
+const contextPath = join(stateDir, "ralph-context.md");
+const historyPath = join(stateDir, "ralph-history.json");
 
 // Parse arguments
 const args = process.argv.slice(2);
@@ -38,11 +44,18 @@ Options:
   --version, -v       Show version
   --help, -h          Show this help
 
+Commands:
+  --status            Show current Ralph loop status and history
+  --add-context TEXT  Add context for the next iteration (or edit .opencode/ralph-context.md)
+  --clear-context     Clear any pending context
+
 Examples:
   ralph "Build a REST API for todos"
   ralph "Fix the auth bug" --max-iterations 10
   ralph "Add tests" --completion-promise "ALL TESTS PASS" --model openai/gpt-5.1
   ralph --prompt-file ./prompt.md --max-iterations 5
+  ralph --status                                        # Check loop status
+  ralph --add-context "Focus on the auth module first"  # Add hint for next iteration
 
 How it works:
   1. Sends your prompt to OpenCode
@@ -62,6 +75,200 @@ Learn more: https://ghuntley.com/ralph/
 if (args.includes("--version") || args.includes("-v")) {
   console.log(`ralph ${VERSION}`);
   process.exit(0);
+}
+
+// History tracking interface
+interface IterationHistory {
+  iteration: number;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  toolsUsed: Record<string, number>;
+  filesModified: string[];
+  exitCode: number;
+  completionDetected: boolean;
+  errors: string[];
+}
+
+interface RalphHistory {
+  iterations: IterationHistory[];
+  totalDurationMs: number;
+  struggleIndicators: {
+    repeatedErrors: Record<string, number>;
+    noProgressIterations: number;
+    shortIterations: number;
+  };
+}
+
+// Load history
+function loadHistory(): RalphHistory {
+  if (!existsSync(historyPath)) {
+    return {
+      iterations: [],
+      totalDurationMs: 0,
+      struggleIndicators: { repeatedErrors: {}, noProgressIterations: 0, shortIterations: 0 }
+    };
+  }
+  try {
+    return JSON.parse(readFileSync(historyPath, "utf-8"));
+  } catch {
+    return {
+      iterations: [],
+      totalDurationMs: 0,
+      struggleIndicators: { repeatedErrors: {}, noProgressIterations: 0, shortIterations: 0 }
+    };
+  }
+}
+
+function saveHistory(history: RalphHistory): void {
+  if (!existsSync(stateDir)) {
+    mkdirSync(stateDir, { recursive: true });
+  }
+  writeFileSync(historyPath, JSON.stringify(history, null, 2));
+}
+
+function clearHistory(): void {
+  if (existsSync(historyPath)) {
+    try {
+      require("fs").unlinkSync(historyPath);
+    } catch {}
+  }
+}
+
+// Status command
+if (args.includes("--status")) {
+  const state = loadState();
+  const history = loadHistory();
+  const context = existsSync(contextPath) ? readFileSync(contextPath, "utf-8").trim() : null;
+
+  console.log(`
+╔══════════════════════════════════════════════════════════════════╗
+║                    Ralph Wiggum Status                           ║
+╚══════════════════════════════════════════════════════════════════╝
+`);
+
+  if (state?.active) {
+    const elapsed = Date.now() - new Date(state.startedAt).getTime();
+    const elapsedStr = formatDurationLong(elapsed);
+    console.log(`🔄 ACTIVE LOOP`);
+    console.log(`   Iteration:    ${state.iteration}${state.maxIterations > 0 ? ` / ${state.maxIterations}` : " (unlimited)"}`);
+    console.log(`   Started:      ${state.startedAt}`);
+    console.log(`   Elapsed:      ${elapsedStr}`);
+    console.log(`   Promise:      ${state.completionPromise}`);
+    if (state.model) console.log(`   Model:        ${state.model}`);
+    console.log(`   Prompt:       ${state.prompt.substring(0, 60)}${state.prompt.length > 60 ? "..." : ""}`);
+  } else {
+    console.log(`⏹️  No active loop`);
+  }
+
+  if (context) {
+    console.log(`\n📝 PENDING CONTEXT (will be injected next iteration):`);
+    console.log(`   ${context.split("\n").join("\n   ")}`);
+  }
+
+  if (history.iterations.length > 0) {
+    console.log(`\n📊 HISTORY (${history.iterations.length} iterations)`);
+    console.log(`   Total time:   ${formatDurationLong(history.totalDurationMs)}`);
+
+    // Show last 5 iterations
+    const recent = history.iterations.slice(-5);
+    console.log(`\n   Recent iterations:`);
+    for (const iter of recent) {
+      const tools = Object.entries(iter.toolsUsed)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([k, v]) => `${k}:${v}`)
+        .join(" ");
+      const status = iter.completionDetected ? "✅" : iter.exitCode !== 0 ? "❌" : "🔄";
+      console.log(`   ${status} #${iter.iteration}: ${formatDurationLong(iter.durationMs)} | ${tools || "no tools"}`);
+    }
+
+    // Struggle detection
+    const struggle = history.struggleIndicators;
+    const hasRepeatedErrors = Object.values(struggle.repeatedErrors).some(count => count >= 2);
+    if (struggle.noProgressIterations >= 3 || struggle.shortIterations >= 3 || hasRepeatedErrors) {
+      console.log(`\n⚠️  STRUGGLE INDICATORS:`);
+      if (struggle.noProgressIterations >= 3) {
+        console.log(`   - No file changes in ${struggle.noProgressIterations} iterations`);
+      }
+      if (struggle.shortIterations >= 3) {
+        console.log(`   - ${struggle.shortIterations} very short iterations (< 30s)`);
+      }
+      const topErrors = Object.entries(struggle.repeatedErrors)
+        .filter(([_, count]) => count >= 2)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3);
+      for (const [error, count] of topErrors) {
+        console.log(`   - Same error ${count}x: "${error.substring(0, 50)}..."`);
+      }
+      console.log(`\n   💡 Consider using: ralph --add-context "your hint here"`);
+    }
+  }
+
+  console.log("");
+  process.exit(0);
+}
+
+// Add context command
+const addContextIdx = args.indexOf("--add-context");
+if (addContextIdx !== -1) {
+  const contextText = args[addContextIdx + 1];
+  if (!contextText) {
+    console.error("Error: --add-context requires a text argument");
+    console.error("Usage: ralph --add-context \"Your context or hint here\"");
+    process.exit(1);
+  }
+
+  if (!existsSync(stateDir)) {
+    mkdirSync(stateDir, { recursive: true });
+  }
+
+  // Append to existing context or create new
+  const timestamp = new Date().toISOString();
+  const newEntry = `\n## Context added at ${timestamp}\n${contextText}\n`;
+
+  if (existsSync(contextPath)) {
+    const existing = readFileSync(contextPath, "utf-8");
+    writeFileSync(contextPath, existing + newEntry);
+  } else {
+    writeFileSync(contextPath, `# Ralph Loop Context\n${newEntry}`);
+  }
+
+  console.log(`✅ Context added for next iteration`);
+  console.log(`   File: ${contextPath}`);
+
+  const state = loadState();
+  if (state?.active) {
+    console.log(`   Will be picked up in iteration ${state.iteration + 1}`);
+  } else {
+    console.log(`   Will be used when loop starts`);
+  }
+  process.exit(0);
+}
+
+// Clear context command
+if (args.includes("--clear-context")) {
+  if (existsSync(contextPath)) {
+    require("fs").unlinkSync(contextPath);
+    console.log(`✅ Context cleared`);
+  } else {
+    console.log(`ℹ️  No pending context to clear`);
+  }
+  process.exit(0);
+}
+
+function formatDurationLong(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
 }
 
 // Parse options
@@ -173,10 +380,6 @@ if (!prompt) {
   process.exit(1);
 }
 
-// State file path
-const stateDir = join(process.cwd(), ".opencode");
-const statePath = join(stateDir, "ralph-loop.state.json");
-
 interface RalphState {
   active: boolean;
   iteration: number;
@@ -258,12 +461,43 @@ function ensureFilteredPluginsConfig(): string {
 }
 
 // Build the full prompt with iteration context
+function loadContext(): string | null {
+  if (!existsSync(contextPath)) {
+    return null;
+  }
+  try {
+    const content = readFileSync(contextPath, "utf-8").trim();
+    return content || null;
+  } catch {
+    return null;
+  }
+}
+
+function clearContext(): void {
+  if (existsSync(contextPath)) {
+    try {
+      require("fs").unlinkSync(contextPath);
+    } catch {}
+  }
+}
+
 function buildPrompt(state: RalphState): string {
+  const context = loadContext();
+  const contextSection = context
+    ? `
+## Additional Context (added by user mid-loop)
+
+${context}
+
+---
+`
+    : "";
+
   return `
 # Ralph Wiggum Loop - Iteration ${state.iteration}
 
 You are in an iterative development loop. Work on the task below until you can genuinely complete it.
-
+${contextSection}
 ## Your Task
 
 ${state.prompt}
@@ -271,9 +505,10 @@ ${state.prompt}
 ## Instructions
 
 1. Read the current state of files to understand what's been done
-2. Make progress on the task
-3. Run tests/verification if applicable
-4. When the task is GENUINELY COMPLETE, output:
+2. **Update your todo list** - Use the TodoWrite tool to track progress and plan remaining work
+3. Make progress on the task
+4. Run tests/verification if applicable
+5. When the task is GENUINELY COMPLETE, output:
    <promise>${state.completionPromise}</promise>
 
 ## Critical Rules
@@ -283,6 +518,7 @@ ${state.prompt}
 - If stuck, try a different approach
 - Check your work before claiming completion
 - The loop will continue until you succeed
+- **IMPORTANT**: Update your todo list at the start of each iteration to show progress
 
 ## Current Iteration: ${state.iteration}${state.maxIterations > 0 ? ` / ${state.maxIterations}` : " (unlimited)"}
 
@@ -490,6 +726,96 @@ async function streamProcessOutput(
   return { stdoutText, stderrText, toolCounts };
 }
 // Main loop
+// Helper to detect per-iteration file changes using content hashes
+// Works correctly with --no-commit by comparing file content hashes
+
+interface FileSnapshot {
+  files: Map<string, string>; // filename -> hash/mtime
+}
+
+async function captureFileSnapshot(): Promise<FileSnapshot> {
+  const files = new Map<string, string>();
+  try {
+    // Get list of all tracked and modified files
+    const status = await $`git status --porcelain`.text();
+    const trackedFiles = await $`git ls-files`.text();
+
+    // Combine modified and tracked files
+    const allFiles = new Set<string>();
+    for (const line of status.split("\n")) {
+      if (line.trim()) {
+        allFiles.add(line.substring(3).trim());
+      }
+    }
+    for (const file of trackedFiles.split("\n")) {
+      if (file.trim()) {
+        allFiles.add(file.trim());
+      }
+    }
+
+    // Get hash for each file (using git hash-object for content comparison)
+    for (const file of allFiles) {
+      try {
+        const hash = await $`git hash-object ${file} 2>/dev/null || stat -f '%m' ${file} 2>/dev/null || echo ''`.text();
+        files.set(file, hash.trim());
+      } catch {
+        // File may not exist, skip
+      }
+    }
+  } catch {
+    // Git not available or error
+  }
+  return { files };
+}
+
+function getModifiedFilesSinceSnapshot(before: FileSnapshot, after: FileSnapshot): string[] {
+  const changedFiles: string[] = [];
+
+  // Check for new or modified files
+  for (const [file, hash] of after.files) {
+    const prevHash = before.files.get(file);
+    if (prevHash !== hash) {
+      changedFiles.push(file);
+    }
+  }
+
+  // Check for deleted files
+  for (const [file] of before.files) {
+    if (!after.files.has(file)) {
+      changedFiles.push(file);
+    }
+  }
+
+  return changedFiles;
+}
+
+// Helper to extract error patterns from output
+function extractErrors(output: string): string[] {
+  const errors: string[] = [];
+  const lines = output.split("\n");
+
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    // Match common error patterns
+    if (
+      lower.includes("error:") ||
+      lower.includes("failed:") ||
+      lower.includes("exception:") ||
+      lower.includes("typeerror") ||
+      lower.includes("syntaxerror") ||
+      lower.includes("referenceerror") ||
+      (lower.includes("test") && lower.includes("fail"))
+    ) {
+      const cleaned = line.trim().substring(0, 200);
+      if (cleaned && !errors.includes(cleaned)) {
+        errors.push(cleaned);
+      }
+    }
+  }
+
+  return errors.slice(0, 10); // Cap at 10 errors per iteration
+}
+
 async function runRalphLoop(): Promise<void> {
   // Check if a loop is already running
   const existingState = loadState();
@@ -519,6 +845,14 @@ async function runRalphLoop(): Promise<void> {
   };
 
   saveState(state);
+
+  // Initialize history tracking
+  const history: RalphHistory = {
+    iterations: [],
+    totalDurationMs: 0,
+    struggleIndicators: { repeatedErrors: {}, noProgressIterations: 0, shortIterations: 0 }
+  };
+  saveHistory(history);
 
   const promptPreview = prompt.replace(/\s+/g, " ").substring(0, 80) + (prompt.length > 80 ? "..." : "");
   if (promptSource) {
@@ -568,13 +902,21 @@ async function runRalphLoop(): Promise<void> {
     if (maxIterations > 0 && state.iteration > maxIterations) {
       console.log(`\n╔══════════════════════════════════════════════════════════════════╗`);
       console.log(`║  Max iterations (${maxIterations}) reached. Loop stopped.`);
+      console.log(`║  Total time: ${formatDurationLong(history.totalDurationMs)}`);
       console.log(`╚══════════════════════════════════════════════════════════════════╝`);
       clearState();
+      // Keep history for analysis via --status
       break;
     }
 
     console.log(`\n🔄 Iteration ${state.iteration}${maxIterations > 0 ? ` / ${maxIterations}` : ""}`);
     console.log("─".repeat(68));
+
+    // Capture context at start of iteration (to only clear what was consumed)
+    const contextAtStart = loadContext();
+
+    // Capture git state before iteration to detect per-iteration changes
+    const snapshotBefore = await captureFileSnapshot();
 
     // Build the prompt
     const fullPrompt = buildPrompt(state);
@@ -635,13 +977,73 @@ async function runRalphLoop(): Promise<void> {
       const combinedOutput = `${result}\n${stderr}`;
       const completionDetected = checkCompletion(combinedOutput, completionPromise);
 
+      const iterationDuration = Date.now() - iterationStart;
+
       printIterationSummary({
         iteration: state.iteration,
-        elapsedMs: Date.now() - iterationStart,
+        elapsedMs: iterationDuration,
         toolCounts,
         exitCode,
         completionDetected,
       });
+
+      // Track iteration history - compare against pre-iteration snapshot
+      const snapshotAfter = await captureFileSnapshot();
+      const filesModified = getModifiedFilesSinceSnapshot(snapshotBefore, snapshotAfter);
+      const errors = extractErrors(combinedOutput);
+
+      const iterationRecord: IterationHistory = {
+        iteration: state.iteration,
+        startedAt: new Date(iterationStart).toISOString(),
+        endedAt: new Date().toISOString(),
+        durationMs: iterationDuration,
+        toolsUsed: Object.fromEntries(toolCounts),
+        filesModified,
+        exitCode,
+        completionDetected,
+        errors,
+      };
+
+      history.iterations.push(iterationRecord);
+      history.totalDurationMs += iterationDuration;
+
+      // Update struggle indicators
+      if (filesModified.length === 0) {
+        history.struggleIndicators.noProgressIterations++;
+      } else {
+        history.struggleIndicators.noProgressIterations = 0; // Reset on progress
+      }
+
+      if (iterationDuration < 30000) { // Less than 30 seconds
+        history.struggleIndicators.shortIterations++;
+      } else {
+        history.struggleIndicators.shortIterations = 0; // Reset on normal-length iteration
+      }
+
+      if (errors.length === 0) {
+        // Reset error tracking when iteration has no errors (issue resolved)
+        history.struggleIndicators.repeatedErrors = {};
+      } else {
+        for (const error of errors) {
+          const key = error.substring(0, 100);
+          history.struggleIndicators.repeatedErrors[key] = (history.struggleIndicators.repeatedErrors[key] || 0) + 1;
+        }
+      }
+
+      saveHistory(history);
+
+      // Show struggle warning if detected
+      const struggle = history.struggleIndicators;
+      if (state.iteration > 2 && (struggle.noProgressIterations >= 3 || struggle.shortIterations >= 3)) {
+        console.log(`\n⚠️  Potential struggle detected:`);
+        if (struggle.noProgressIterations >= 3) {
+          console.log(`   - No file changes in ${struggle.noProgressIterations} iterations`);
+        }
+        if (struggle.shortIterations >= 3) {
+          console.log(`   - ${struggle.shortIterations} very short iterations`);
+        }
+        console.log(`   💡 Tip: Use 'ralph --add-context "hint"' in another terminal to guide the agent`);
+      }
 
       if (detectPlaceholderPluginError(combinedOutput)) {
         console.error(
@@ -665,9 +1067,18 @@ async function runRalphLoop(): Promise<void> {
         console.log(`\n╔══════════════════════════════════════════════════════════════════╗`);
         console.log(`║  ✅ Completion promise detected: <promise>${completionPromise}</promise>`);
         console.log(`║  Task completed in ${state.iteration} iteration(s)`);
+        console.log(`║  Total time: ${formatDurationLong(history.totalDurationMs)}`);
         console.log(`╚══════════════════════════════════════════════════════════════════╝`);
         clearState();
+        clearHistory();
+        clearContext();
         break;
+      }
+
+      // Clear context only if it was present at iteration start (preserve mid-iteration additions)
+      if (contextAtStart) {
+        console.log(`📝 Context was consumed this iteration`);
+        clearContext();
       }
 
       // Auto-commit if enabled
@@ -693,8 +1104,35 @@ async function runRalphLoop(): Promise<void> {
       await new Promise(r => setTimeout(r, 1000));
 
     } catch (error) {
+      // Kill subprocess if still running to prevent orphaned processes
+      if (currentProc) {
+        try {
+          currentProc.kill();
+        } catch {
+          // Process may have already exited
+        }
+        currentProc = null;
+      }
       console.error(`\n❌ Error in iteration ${state.iteration}:`, error);
       console.log("Continuing to next iteration...");
+
+      // Track failed iteration in history to keep state/history in sync
+      const iterationDuration = Date.now() - iterationStart;
+      const errorRecord: IterationHistory = {
+        iteration: state.iteration,
+        startedAt: new Date(iterationStart).toISOString(),
+        endedAt: new Date().toISOString(),
+        durationMs: iterationDuration,
+        toolsUsed: {},
+        filesModified: [],
+        exitCode: -1,
+        completionDetected: false,
+        errors: [String(error).substring(0, 200)],
+      };
+      history.iterations.push(errorRecord);
+      history.totalDurationMs += iterationDuration;
+      saveHistory(history);
+
       state.iteration++;
       saveState(state);
       await new Promise(r => setTimeout(r, 2000));
