@@ -240,6 +240,10 @@ npm uninstall -g @th0rgal/ralph-wiggum
 - [Original technique by Geoffrey Huntley](https://ghuntley.com/ralph/)
 - [Ralph Orchestrator](https://github.com/mikeyobrien/ralph-orchestrator)
 
+## See Also
+
+Check out [OpenAgent](https://github.com/Th0rgal/openagent) - a dashboard for orchestrating AI agents with workspace management, real-time monitoring, and multi-agent workflows.
+
 ## License
 
 MIT
