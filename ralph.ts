@@ -726,37 +726,67 @@ async function streamProcessOutput(
   return { stdoutText, stderrText, toolCounts };
 }
 // Main loop
-// Helper to get modified files since last commit (or last snapshot)
-// Uses git diff to detect per-iteration changes even with --no-commit
-let lastGitSnapshot: string | null = null;
+// Helper to detect per-iteration file changes using content hashes
+// Works correctly with --no-commit by comparing file content hashes
 
-async function captureGitSnapshot(): Promise<string> {
-  try {
-    // Capture current state of all tracked and untracked files
-    const status = await $`git status --porcelain`.text();
-    return status;
-  } catch {
-    return "";
-  }
+interface FileSnapshot {
+  files: Map<string, string>; // filename -> hash/mtime
 }
 
-async function getModifiedFilesSinceSnapshot(previousSnapshot: string): Promise<string[]> {
+async function captureFileSnapshot(): Promise<FileSnapshot> {
+  const files = new Map<string, string>();
   try {
-    const currentSnapshot = await $`git status --porcelain`.text();
-    const previousFiles = new Set(previousSnapshot.split("\n").filter(l => l.trim()));
-    const currentFiles = new Set(currentSnapshot.split("\n").filter(l => l.trim()));
+    // Get list of all tracked and modified files
+    const status = await $`git status --porcelain`.text();
+    const trackedFiles = await $`git ls-files`.text();
 
-    // Find files that changed (new entries or different status)
-    const changedFiles: string[] = [];
-    for (const line of currentFiles) {
-      if (!previousFiles.has(line) && line.trim()) {
-        changedFiles.push(line.substring(3).trim());
+    // Combine modified and tracked files
+    const allFiles = new Set<string>();
+    for (const line of status.split("\n")) {
+      if (line.trim()) {
+        allFiles.add(line.substring(3).trim());
       }
     }
-    return changedFiles;
+    for (const file of trackedFiles.split("\n")) {
+      if (file.trim()) {
+        allFiles.add(file.trim());
+      }
+    }
+
+    // Get hash for each file (using git hash-object for content comparison)
+    for (const file of allFiles) {
+      try {
+        const hash = await $`git hash-object ${file} 2>/dev/null || stat -f '%m' ${file} 2>/dev/null || echo ''`.text();
+        files.set(file, hash.trim());
+      } catch {
+        // File may not exist, skip
+      }
+    }
   } catch {
-    return [];
+    // Git not available or error
   }
+  return { files };
+}
+
+function getModifiedFilesSinceSnapshot(before: FileSnapshot, after: FileSnapshot): string[] {
+  const changedFiles: string[] = [];
+
+  // Check for new or modified files
+  for (const [file, hash] of after.files) {
+    const prevHash = before.files.get(file);
+    if (prevHash !== hash) {
+      changedFiles.push(file);
+    }
+  }
+
+  // Check for deleted files
+  for (const [file] of before.files) {
+    if (!after.files.has(file)) {
+      changedFiles.push(file);
+    }
+  }
+
+  return changedFiles;
 }
 
 // Helper to extract error patterns from output
@@ -886,7 +916,7 @@ async function runRalphLoop(): Promise<void> {
     const contextAtStart = loadContext();
 
     // Capture git state before iteration to detect per-iteration changes
-    const gitSnapshotBefore = await captureGitSnapshot();
+    const snapshotBefore = await captureFileSnapshot();
 
     // Build the prompt
     const fullPrompt = buildPrompt(state);
@@ -958,7 +988,8 @@ async function runRalphLoop(): Promise<void> {
       });
 
       // Track iteration history - compare against pre-iteration snapshot
-      const filesModified = await getModifiedFilesSinceSnapshot(gitSnapshotBefore);
+      const snapshotAfter = await captureFileSnapshot();
+      const filesModified = getModifiedFilesSinceSnapshot(snapshotBefore, snapshotAfter);
       const errors = extractErrors(combinedOutput);
 
       const iterationRecord: IterationHistory = {
