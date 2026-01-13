@@ -726,14 +726,34 @@ async function streamProcessOutput(
   return { stdoutText, stderrText, toolCounts };
 }
 // Main loop
-// Helper to get modified files from git
-async function getModifiedFiles(): Promise<string[]> {
+// Helper to get modified files since last commit (or last snapshot)
+// Uses git diff to detect per-iteration changes even with --no-commit
+let lastGitSnapshot: string | null = null;
+
+async function captureGitSnapshot(): Promise<string> {
   try {
+    // Capture current state of all tracked and untracked files
     const status = await $`git status --porcelain`.text();
-    return status
-      .split("\n")
-      .filter(line => line.trim())
-      .map(line => line.substring(3).trim());
+    return status;
+  } catch {
+    return "";
+  }
+}
+
+async function getModifiedFilesSinceSnapshot(previousSnapshot: string): Promise<string[]> {
+  try {
+    const currentSnapshot = await $`git status --porcelain`.text();
+    const previousFiles = new Set(previousSnapshot.split("\n").filter(l => l.trim()));
+    const currentFiles = new Set(currentSnapshot.split("\n").filter(l => l.trim()));
+
+    // Find files that changed (new entries or different status)
+    const changedFiles: string[] = [];
+    for (const line of currentFiles) {
+      if (!previousFiles.has(line) && line.trim()) {
+        changedFiles.push(line.substring(3).trim());
+      }
+    }
+    return changedFiles;
   } catch {
     return [];
   }
@@ -865,6 +885,9 @@ async function runRalphLoop(): Promise<void> {
     // Capture context at start of iteration (to only clear what was consumed)
     const contextAtStart = loadContext();
 
+    // Capture git state before iteration to detect per-iteration changes
+    const gitSnapshotBefore = await captureGitSnapshot();
+
     // Build the prompt
     const fullPrompt = buildPrompt(state);
     const iterationStart = Date.now();
@@ -934,8 +957,8 @@ async function runRalphLoop(): Promise<void> {
         completionDetected,
       });
 
-      // Track iteration history
-      const filesModified = await getModifiedFiles();
+      // Track iteration history - compare against pre-iteration snapshot
+      const filesModified = await getModifiedFilesSinceSnapshot(gitSnapshotBefore);
       const errors = extractErrors(combinedOutput);
 
       const iterationRecord: IterationHistory = {
@@ -1061,6 +1084,24 @@ async function runRalphLoop(): Promise<void> {
       }
       console.error(`\n❌ Error in iteration ${state.iteration}:`, error);
       console.log("Continuing to next iteration...");
+
+      // Track failed iteration in history to keep state/history in sync
+      const iterationDuration = Date.now() - iterationStart;
+      const errorRecord: IterationHistory = {
+        iteration: state.iteration,
+        startedAt: new Date(iterationStart).toISOString(),
+        endedAt: new Date().toISOString(),
+        durationMs: iterationDuration,
+        toolsUsed: {},
+        filesModified: [],
+        exitCode: -1,
+        completionDetected: false,
+        errors: [String(error).substring(0, 200)],
+      };
+      history.iterations.push(errorRecord);
+      history.totalDurationMs += iterationDuration;
+      saveHistory(history);
+
       state.iteration++;
       saveState(state);
       await new Promise(r => setTimeout(r, 2000));
