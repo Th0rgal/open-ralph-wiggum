@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">Ralph Wiggum for AI agents</h1>
+  <h1 align="center">Ralph Wiggum for OpenCode</h1>
 </p>
 
 <p align="center">
@@ -131,6 +131,7 @@ Options:
   --verbose-tools          Print every tool line (disable compact tool summary)
   --no-plugins             Disable non-auth OpenCode plugins for this run (opencode only)
   --no-commit              Don't auto-commit after iterations
+  --allow-all              Auto-approve all tool permissions (default: on)
   --help                   Show help
 ```
 
@@ -289,6 +290,63 @@ Let users export reports as CSV from the dashboard.
 ## Completion Promise
 <promise>COMPLETE</promise>
 ```
+
+### JSON Feature List (Recommended for Complex Projects)
+
+For larger projects, a structured JSON feature list works better than prose. Based on [Anthropic's research on effective agent harnesses](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents), JSON format reduces the chance of agents inappropriately modifying test definitions.
+
+Create a `features.json` file:
+
+```json
+{
+  "features": [
+    {
+      "category": "functional",
+      "description": "Export button downloads CSV with current report data",
+      "steps": [
+        "Navigate to dashboard",
+        "Click 'Export CSV' button",
+        "Verify CSV file downloads",
+        "Open CSV and verify columns: date, revenue, sessions",
+        "Verify data matches displayed report"
+      ],
+      "passes": false
+    },
+    {
+      "category": "functional",
+      "description": "Export handles large reports up to 10k rows",
+      "steps": [
+        "Load report with 10,000 rows",
+        "Click 'Export CSV' button",
+        "Verify export completes without timeout",
+        "Verify all rows present in CSV"
+      ],
+      "passes": false
+    },
+    {
+      "category": "ui",
+      "description": "Export button matches existing dashboard styling",
+      "steps": [
+        "Navigate to dashboard",
+        "Verify button uses existing button component",
+        "Verify button placement in header area"
+      ],
+      "passes": false
+    }
+  ]
+}
+```
+
+Then reference it in your prompt:
+
+```
+Read features.json for the feature list. Work through each feature one at a time.
+After verifying a feature works end-to-end, update its "passes" field to true.
+Do NOT modify the description or steps - only change the passes boolean.
+Output <promise>COMPLETE</promise> when all features pass.
+```
+
+**Why JSON?** Agents are less likely to inappropriately modify JSON test definitions compared to Markdown. The structured format keeps agents focused on implementation rather than redefining success criteria.
 
 ## When to Use Ralph
 

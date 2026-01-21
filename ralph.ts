@@ -120,7 +120,7 @@ Options:
   --verbose-tools     Print every tool line (disable compact tool summary)
   --no-plugins        Disable non-auth OpenCode plugins for this run (opencode only)
   --no-commit         Don't auto-commit after each iteration
-  --allow-all         Auto-approve all tool permissions (for non-interactive use)
+  --allow-all         Auto-approve all tool permissions (default: on)
   --version, -v       Show version
   --help, -h          Show this help
 
@@ -363,7 +363,7 @@ let model = "";
 let agentType: AgentType = "opencode";
 let autoCommit = true;
 let disablePlugins = false;
-let allowAllPermissions = false;
+let allowAllPermissions = true;
 let promptFile = "";
 let streamOutput = true;
 let verboseTools = false;
@@ -625,7 +625,7 @@ function clearContext(): void {
   }
 }
 
-function buildPrompt(state: RalphState): string {
+function buildPrompt(state: RalphState, agent: AgentConfig): string {
   const context = loadContext();
   const contextSection = context
     ? `
@@ -636,6 +636,14 @@ ${context}
 ---
 `
     : "";
+
+  const usesTodoTool = agent.type === "opencode";
+  const todoInstruction = usesTodoTool
+    ? "2. **Update your todo list** - Use the TodoWrite tool to track progress and plan remaining work"
+    : "2. Track progress with a short checklist in your response (no TodoWrite tool available)";
+  const todoRule = usesTodoTool
+    ? "- **IMPORTANT**: Update your todo list at the start of each iteration to show progress"
+    : "- Keep a short checklist in your response to show progress";
 
   return `
 # Ralph Wiggum Loop - Iteration ${state.iteration}
@@ -649,7 +657,7 @@ ${state.prompt}
 ## Instructions
 
 1. Read the current state of files to understand what's been done
-2. **Update your todo list** - Use the TodoWrite tool to track progress and plan remaining work
+${todoInstruction}
 3. Make progress on the task
 4. Run tests/verification if applicable
 5. When the task is GENUINELY COMPLETE, output:
@@ -662,7 +670,7 @@ ${state.prompt}
 - If stuck, try a different approach
 - Check your work before claiming completion
 - The loop will continue until you succeed
-- **IMPORTANT**: Update your todo list at the start of each iteration to show progress
+${todoRule}
 
 ## Current Iteration: ${state.iteration}${state.maxIterations > 0 ? ` / ${state.maxIterations}` : " (unlimited)"} (min: ${state.minIterations ?? 1})
 
@@ -1083,7 +1091,7 @@ async function runRalphLoop(): Promise<void> {
     const snapshotBefore = await captureFileSnapshot();
 
     // Build the prompt
-    const fullPrompt = buildPrompt(state);
+    const fullPrompt = buildPrompt(state, agentConfig);
     const iterationStart = Date.now();
 
     try {
