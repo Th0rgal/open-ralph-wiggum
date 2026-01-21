@@ -18,7 +18,7 @@ const statePath = join(stateDir, "ralph-loop.state.json");
 const contextPath = join(stateDir, "ralph-context.md");
 const historyPath = join(stateDir, "ralph-history.json");
 
-type AgentType = "opencode" | "claude-code";
+type AgentType = "opencode" | "claude-code" | "codex";
 
 type AgentEnvOptions = { filterPlugins?: boolean; allowAllPermissions?: boolean };
 
@@ -76,6 +76,24 @@ const AGENTS: Record<AgentType, AgentConfig> = {
     },
     configName: "Claude Code",
   },
+  codex: {
+    type: "codex",
+    command: "codex",
+    buildArgs: (promptText, modelName) => {
+      const cmdArgs = ["exec"];
+      if (modelName) {
+        cmdArgs.push("--model", modelName);
+      }
+      cmdArgs.push(promptText);
+      return cmdArgs;
+    },
+    buildEnv: () => ({ ...process.env }),
+    parseToolOutput: line => {
+      const match = stripAnsi(line).match(/(?:Tool:|Using|Calling|Running)\s+([A-Za-z0-9_-]+)/i);
+      return match ? match[1] : null;
+    },
+    configName: "Codex",
+  },
 };
 // Parse arguments
 const args = process.argv.slice(2);
@@ -92,7 +110,7 @@ Arguments:
   prompt              Task description for the AI to work on
 
 Options:
-  --agent AGENT       AI agent to use: opencode (default), claude-code
+  --agent AGENT       AI agent to use: opencode (default), claude-code, codex
   --min-iterations N  Minimum iterations before completion allowed (default: 1)
   --max-iterations N  Maximum iterations before stopping (default: unlimited)
   --completion-promise TEXT  Phrase that signals completion (default: COMPLETE)
@@ -115,6 +133,7 @@ Examples:
   ralph "Build a REST API for todos"
   ralph "Fix the auth bug" --max-iterations 10
   ralph "Add tests" --completion-promise "ALL TESTS PASS" --model openai/gpt-5.1
+  ralph "Fix the bug" --agent codex --model gpt-5-codex
   ralph --prompt-file ./prompt.md --max-iterations 5
   ralph --status                                        # Check loop status
   ralph --add-context "Focus on the auth module first"  # Add hint for next iteration
@@ -357,8 +376,8 @@ for (let i = 0; i < args.length; i++) {
 
   if (arg === "--agent") {
     const val = args[++i];
-    if (!val || !["opencode", "claude-code"].includes(val)) {
-      console.error("Error: --agent requires: 'opencode' or 'claude-code'");
+    if (!val || !["opencode", "claude-code", "codex"].includes(val)) {
+      console.error("Error: --agent requires: 'opencode', 'claude-code', or 'codex'");
       process.exit(1);
     }
     agentType = val as AgentType;
@@ -958,6 +977,9 @@ async function runRalphLoop(): Promise<void> {
   if (disablePlugins && agentConfig.type === "claude-code") {
     console.warn("Warning: --no-plugins has no effect with Claude Code agent");
   }
+  if (disablePlugins && agentConfig.type === "codex") {
+    console.warn("Warning: --no-plugins has no effect with Codex agent");
+  }
 
   console.log(`
 ╔══════════════════════════════════════════════════════════════════╗
@@ -1067,8 +1089,12 @@ async function runRalphLoop(): Promise<void> {
     try {
       // Build command arguments
       const cmdArgs = agentConfig.buildArgs(fullPrompt, model);
-      if (agentType === "claude-code" && allowAllPermissions) {
-        cmdArgs.push("--dangerously-skip-permissions");
+      if (allowAllPermissions) {
+        if (agentType === "claude-code") {
+          cmdArgs.push("--dangerously-skip-permissions");
+        } else if (agentType === "codex") {
+          cmdArgs.push("--full-auto");
+        }
       }
 
       const env = agentConfig.buildEnv({

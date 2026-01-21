@@ -8,7 +8,7 @@
 
 <p align="center">
   <strong>Iterative AI development loops. Same prompt. Persistent progress.</strong><br>
-  <em>Supports OpenCode (default) and Claude Code via <code>--agent</code>.</em><br>
+  <em>Supports OpenCode (default), Claude Code, and Codex via <code>--agent</code>.</em><br>
   <em>Based on <a href="https://ghuntley.com/ralph/">ghuntley.com/ralph</a></em>
 </p>
 
@@ -36,7 +36,7 @@
 
 Ralph is a development methodology where an AI agent receives the **same prompt repeatedly** until it completes a task. Each iteration, the AI sees its previous work in files and git history, enabling self-correction and incremental progress.
 
-This package provides a **CLI-only** implementation (no OpenCode/Claude Code plugin).
+This package provides a **CLI-only** implementation (no OpenCode/Claude Code/Codex plugin).
 
 ```bash
 # The essence of Ralph (agent CLI varies):
@@ -45,7 +45,7 @@ while true; do
 done
 ```
 
-Use `--agent claude-code` to run the loop with Claude Code instead of OpenCode.
+Use `--agent claude-code` or `--agent codex` to run the loop with Claude Code or Codex instead of OpenCode.
 
 **The AI doesn't talk to itself.** It sees the same prompt each time, but the files have changed from previous iterations. This creates a feedback loop where the AI iteratively improves its work until success.
 
@@ -62,7 +62,7 @@ Use `--agent claude-code` to run the loop with Claude Code instead of OpenCode.
 
 ## Installation
 
-**Prerequisites:** [Bun](https://bun.sh) and at least one supported agent CLI: [OpenCode](https://opencode.ai) or [Claude Code](https://claude.ai/code)
+**Prerequisites:** [Bun](https://bun.sh) and at least one supported agent CLI: [OpenCode](https://opencode.ai), [Claude Code](https://claude.ai/code), or [Codex](https://developers.openai.com/codex/)
 
 ### npm (recommended)
 
@@ -108,6 +108,10 @@ ralph "Build a REST API for todos with CRUD operations and tests. \
 # Use Claude Code instead of OpenCode
 ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
   --agent claude-code --model claude-sonnet-4 --max-iterations 5
+
+# Use Codex instead of OpenCode
+ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
+  --agent codex --model gpt-5-codex --max-iterations 5
 ```
 
 ## Commands
@@ -118,7 +122,7 @@ ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise>
 ralph "<prompt>" [options]
 
 Options:
-  --agent AGENT            AI agent to use: opencode (default), claude-code
+  --agent AGENT            AI agent to use: opencode (default), claude-code, codex
   --max-iterations N       Stop after N iterations (default: unlimited)
   --completion-promise T   Text that signals completion (default: COMPLETE)
   --model MODEL            Model to use (agent-specific)
@@ -243,6 +247,47 @@ Output <promise>DONE</promise> when refactored and tests pass.
 ```bash
 # Safety net for runaway loops
 ralph "Your task" --max-iterations 20
+```
+
+## Recommended PRD Format
+
+Ralph treats prompt files as plain text, so any format works. For best results, use a concise PRD with:
+
+- **Goal**: one sentence summary of the desired outcome
+- **Scope**: what is in/out
+- **Requirements**: numbered, testable items
+- **Constraints**: tech stack, performance, security, compatibility
+- **Acceptance criteria**: explicit success checks
+- **Completion promise**: include `<promise>COMPLETE</promise>` (or match your `--completion-promise`)
+
+Example (Markdown):
+
+```markdown
+# PRD: Add Export Button
+
+## Goal
+Let users export reports as CSV from the dashboard.
+
+## Scope
+- In: export current report view
+- Out: background exports, scheduling
+
+## Requirements
+1. Add "Export CSV" button to dashboard header.
+2. CSV includes columns: date, revenue, sessions.
+3. Works for reports up to 10k rows.
+
+## Constraints
+- Keep current UI styling.
+- Use existing CSV utility in utils/csv.ts.
+
+## Acceptance Criteria
+- Clicking button downloads a valid CSV.
+- CSV opens cleanly in Excel/Sheets.
+- All existing tests pass.
+
+## Completion Promise
+<promise>COMPLETE</promise>
 ```
 
 ## When to Use Ralph
