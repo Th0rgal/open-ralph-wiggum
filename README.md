@@ -112,6 +112,10 @@ ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise>
 # Use Codex instead of OpenCode
 ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
   --agent codex --model gpt-5-codex --max-iterations 5
+
+# Complex project with Tasks Mode
+ralph "Build a full-stack web application with user auth and database" \
+  --tasks --max-iterations 50
 ```
 
 ## Commands
@@ -126,6 +130,8 @@ Options:
   --min-iterations N       Minimum iterations before completion allowed (default: 1)
   --max-iterations N       Stop after N iterations (default: unlimited)
   --completion-promise T   Text that signals completion (default: COMPLETE)
+  --tasks, -t              Enable Tasks Mode for structured task tracking
+  --task-promise T         Text that signals task completion (default: READY_FOR_NEXT_TASK)
   --model MODEL            Model to use (agent-specific)
   --prompt-file, --file, -f  Read prompt content from a file
   --no-stream              Buffer agent output and print at the end
@@ -135,6 +141,59 @@ Options:
   --allow-all              Auto-approve all tool permissions (default: on)
   --no-allow-all           Require interactive permission prompts
   --help                   Show help
+```
+
+### Tasks Mode
+
+Tasks Mode allows you to break complex projects into smaller, manageable tasks. Ralph works on one task at a time and tracks progress in a markdown file.
+
+```bash
+# Enable Tasks Mode
+ralph "Build a complete web application" --tasks --max-iterations 20
+
+# Custom task completion signal
+ralph "Multi-feature project" --tasks --task-promise "TASK_DONE"
+```
+
+#### Task Management Commands
+
+```bash
+# List current tasks
+ralph --list-tasks
+
+# Add a new task
+ralph --add-task "Implement user authentication"
+
+# Remove task by index
+ralph --remove-task 3
+
+# Show status including tasks
+ralph --status --tasks
+```
+
+#### How Tasks Mode Works
+
+1. **Task File**: Tasks are stored in `.ralph/ralph-tasks.md`
+2. **One Task Per Iteration**: Ralph focuses on a single task to reduce confusion
+3. **Automatic Progression**: When a task completes (`<promise>READY_FOR_NEXT_TASK</promise>`), Ralph moves to the next
+4. **Persistent State**: Tasks survive loop restarts
+5. **Focused Context**: Smaller contexts per iteration reduce costs and improve reliability
+
+Task status indicators:
+- `[ ]` - Not started
+- `[/]` - In progress
+- `[x]` - Complete
+
+Example task file:
+```markdown
+# Ralph Tasks
+
+- [ ] Set up project structure
+- [x] Initialize git repository
+- [/] Implement user authentication
+  - [ ] Create login page
+  - [ ] Add JWT handling
+- [ ] Build dashboard UI
 ```
 
 ### Monitoring & Control
@@ -155,6 +214,7 @@ ralph --clear-context
 The `--status` command shows:
 - **Active loop info**: Current iteration, elapsed time, prompt
 - **Pending context**: Any hints queued for next iteration
+- **Current tasks**: When used with `--tasks`, shows task list and progress
 - **Iteration history**: Last 5 iterations with tools used, duration
 - **Struggle indicators**: Warnings if agent is stuck (no progress, repeated errors)
 
@@ -412,6 +472,7 @@ During operation, Ralph stores state in `.ralph/`:
 - `ralph-loop.state.json` - Active loop state
 - `ralph-history.json` - Iteration history and metrics
 - `ralph-context.md` - Pending context for next iteration
+- `ralph-tasks.md` - Task list for Tasks Mode (created when `--tasks` is used)
 
 ## Uninstall
 
