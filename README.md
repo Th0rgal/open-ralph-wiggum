@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">Ralph Wiggum for OpenCode</h1>
+  <h1 align="center">Ralph Wiggum for AI agents</h1>
 </p>
 
 <p align="center">
@@ -8,6 +8,7 @@
 
 <p align="center">
   <strong>Iterative AI development loops. Same prompt. Persistent progress.</strong><br>
+  <em>Supports OpenCode (default) and Claude Code via <code>--agent</code>.</em><br>
   <em>Based on <a href="https://ghuntley.com/ralph/">ghuntley.com/ralph</a></em>
 </p>
 
@@ -35,14 +36,16 @@
 
 Ralph is a development methodology where an AI agent receives the **same prompt repeatedly** until it completes a task. Each iteration, the AI sees its previous work in files and git history, enabling self-correction and incremental progress.
 
-This package provides a **CLI-only** implementation (no OpenCode plugin).
+This package provides a **CLI-only** implementation (no OpenCode/Claude Code plugin).
 
 ```bash
-# The essence of Ralph:
+# The essence of Ralph (agent CLI varies):
 while true; do
   opencode run "Build feature X. Output <promise>DONE</promise> when complete."
 done
 ```
+
+Use `--agent claude-code` to run the loop with Claude Code instead of OpenCode.
 
 **The AI doesn't talk to itself.** It sees the same prompt each time, but the files have changed from previous iterations. This creates a feedback loop where the AI iteratively improves its work until success.
 
@@ -59,7 +62,7 @@ done
 
 ## Installation
 
-**Prerequisites:** [Bun](https://bun.sh) and [OpenCode](https://opencode.ai)
+**Prerequisites:** [Bun](https://bun.sh) and at least one supported agent CLI: [OpenCode](https://opencode.ai) or [Claude Code](https://claude.ai/code)
 
 ### npm (recommended)
 
@@ -101,6 +104,10 @@ ralph "Create a hello.txt file with 'Hello World'. Output <promise>DONE</promise
 ralph "Build a REST API for todos with CRUD operations and tests. \
   Run tests after each change. Output <promise>COMPLETE</promise> when all tests pass." \
   --max-iterations 20
+
+# Use Claude Code instead of OpenCode
+ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
+  --agent claude-code --model claude-sonnet-4 --max-iterations 5
 ```
 
 ## Commands
@@ -111,13 +118,14 @@ ralph "Build a REST API for todos with CRUD operations and tests. \
 ralph "<prompt>" [options]
 
 Options:
+  --agent AGENT            AI agent to use: opencode (default), claude-code
   --max-iterations N       Stop after N iterations (default: unlimited)
   --completion-promise T   Text that signals completion (default: COMPLETE)
-  --model MODEL            OpenCode model to use
+  --model MODEL            Model to use (agent-specific)
   --prompt-file, --file, -f  Read prompt content from a file
-  --no-stream              Buffer OpenCode output and print at the end
+  --no-stream              Buffer agent output and print at the end
   --verbose-tools          Print every tool line (disable compact tool summary)
-  --no-plugins             Disable non-auth OpenCode plugins for this run
+  --no-plugins             Disable non-auth OpenCode plugins for this run (opencode only)
   --no-commit              Don't auto-commit after iterations
   --help                   Show help
 ```
@@ -258,7 +266,7 @@ ralph "Your task" --max-iterations 20
 │                                                             │
 │   ┌──────────┐    same prompt    ┌──────────┐              │
 │   │          │ ───────────────▶  │          │              │
-│   │  ralph   │                   │ OpenCode │              │
+│   │  ralph   │                   │ AI Agent │              │
 │   │   CLI    │ ◀─────────────── │          │              │
 │   │          │   output + files  │          │              │
 │   └──────────┘                   └──────────┘              │
@@ -275,8 +283,8 @@ ralph "Your task" --max-iterations 20
 └─────────────────────────────────────────────────────────────┘
 ```
 
-1. Ralph sends your prompt to OpenCode
-2. OpenCode works on the task, modifies files
+1. Ralph sends your prompt to the selected agent
+2. The agent works on the task, modifies files
 3. Ralph checks output for completion promise
 4. If not found, repeat with same prompt
 5. AI sees previous work in files
@@ -293,9 +301,9 @@ ralph-wiggum/
 └── uninstall.sh / uninstall.ps1 # Uninstallation scripts
 ```
 
-### State Files (in .opencode/)
+### State Files (in .ralph/)
 
-During operation, Ralph stores state in `.opencode/`:
+During operation, Ralph stores state in `.ralph/`:
 - `ralph-loop.state.json` - Active loop state
 - `ralph-history.json` - Iteration history and metrics
 - `ralph-context.md` - Pending context for next iteration

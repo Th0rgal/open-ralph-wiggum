@@ -1,7 +1,7 @@
 {
   "name": "@th0rgal/ralph-wiggum",
   "version": "1.0.9",
-  "description": "Ralph Wiggum technique for OpenCode - iterative AI development loops with self-correcting agents",
+  "description": "Ralph Wiggum technique for iterative AI development loops with multi-agent support",
   "main": "bin/ralph.js",
   "bin": {
     "ralph": "bin/ralph.js"
@@ -32,6 +32,7 @@
     "coding-assistant",
     "llm",
     "claude",
+    "claude-code",
     "gpt",
     "self-correcting",
     "autonomous",

@@ -74,8 +74,8 @@ $RECYCLE.BIN/
 
 context/
 node_modules/
-.opencode/ralph-loop.state.json
-.opencode/ralph-opencode.no-plugins.json
+.ralph/ralph-loop.state.json
+.ralph/ralph-opencode.config.json
 
 # Build artifacts
 bin/*

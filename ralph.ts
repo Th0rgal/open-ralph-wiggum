@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Ralph Wiggum Loop for OpenCode
+ * Ralph Wiggum Loop for AI agents
  *
  * Implementation of the Ralph Wiggum technique - continuous self-referential
  * AI loops for iterative development. Based on ghuntley.com/ralph/
@@ -13,17 +13,76 @@ import { join } from "path";
 const VERSION = "1.0.9";
 
 // Context file path for mid-loop injection
-const stateDir = join(process.cwd(), ".opencode");
+const stateDir = join(process.cwd(), ".ralph");
 const statePath = join(stateDir, "ralph-loop.state.json");
 const contextPath = join(stateDir, "ralph-context.md");
 const historyPath = join(stateDir, "ralph-history.json");
 
+type AgentType = "opencode" | "claude-code";
+
+type AgentEnvOptions = { filterPlugins?: boolean; allowAllPermissions?: boolean };
+
+interface AgentConfig {
+  type: AgentType;
+  command: string;
+  buildArgs: (prompt: string, model: string) => string[];
+  buildEnv: (options: AgentEnvOptions) => Record<string, string>;
+  parseToolOutput: (line: string) => string | null;
+  configName: string;
+}
+
+const AGENTS: Record<AgentType, AgentConfig> = {
+  opencode: {
+    type: "opencode",
+    command: "opencode",
+    buildArgs: (promptText, modelName) => {
+      const cmdArgs = ["run"];
+      if (modelName) {
+        cmdArgs.push("-m", modelName);
+      }
+      cmdArgs.push(promptText);
+      return cmdArgs;
+    },
+    buildEnv: options => {
+      const env = { ...process.env };
+      if (options.filterPlugins || options.allowAllPermissions) {
+        env.OPENCODE_CONFIG = ensureRalphConfig({
+          filterPlugins: options.filterPlugins,
+          allowAllPermissions: options.allowAllPermissions,
+        });
+      }
+      return env;
+    },
+    parseToolOutput: line => {
+      const match = stripAnsi(line).match(/^\|\s{2}([A-Za-z0-9_-]+)/);
+      return match ? match[1] : null;
+    },
+    configName: "OpenCode",
+  },
+  "claude-code": {
+    type: "claude-code",
+    command: "claude",
+    buildArgs: (promptText, modelName) => {
+      const cmdArgs = ["-p", promptText];
+      if (modelName) {
+        cmdArgs.push("--model", modelName);
+      }
+      return cmdArgs;
+    },
+    buildEnv: () => ({ ...process.env }),
+    parseToolOutput: line => {
+      const match = stripAnsi(line).match(/(?:Using|Called|Tool:)\s+([A-Za-z0-9_-]+)/i);
+      return match ? match[1] : null;
+    },
+    configName: "Claude Code",
+  },
+};
 // Parse arguments
 const args = process.argv.slice(2);
 
 if (args.includes("--help") || args.includes("-h")) {
   console.log(`
-Ralph Wiggum Loop - Iterative AI development with OpenCode
+Ralph Wiggum Loop - Iterative AI development with AI agents
 
 Usage:
   ralph "<prompt>" [options]
@@ -33,14 +92,15 @@ Arguments:
   prompt              Task description for the AI to work on
 
 Options:
+  --agent AGENT       AI agent to use: opencode (default), claude-code
   --min-iterations N  Minimum iterations before completion allowed (default: 1)
   --max-iterations N  Maximum iterations before stopping (default: unlimited)
   --completion-promise TEXT  Phrase that signals completion (default: COMPLETE)
-  --model MODEL       Model to use (e.g., anthropic/claude-sonnet)
+  --model MODEL       Model to use (agent-specific, e.g., anthropic/claude-sonnet)
   --prompt-file, --file, -f  Read prompt content from a file
-  --no-stream         Buffer OpenCode output and print at the end
+  --no-stream         Buffer agent output and print at the end
   --verbose-tools     Print every tool line (disable compact tool summary)
-  --no-plugins        Disable non-auth OpenCode plugins for this run
+  --no-plugins        Disable non-auth OpenCode plugins for this run (opencode only)
   --no-commit         Don't auto-commit after each iteration
   --allow-all         Auto-approve all tool permissions (for non-interactive use)
   --version, -v       Show version
@@ -48,7 +108,7 @@ Options:
 
 Commands:
   --status            Show current Ralph loop status and history
-  --add-context TEXT  Add context for the next iteration (or edit .opencode/ralph-context.md)
+  --add-context TEXT  Add context for the next iteration (or edit .ralph/ralph-context.md)
   --clear-context     Clear any pending context
 
 Examples:
@@ -60,8 +120,8 @@ Examples:
   ralph --add-context "Focus on the auth module first"  # Add hint for next iteration
 
 How it works:
-  1. Sends your prompt to OpenCode
-  2. AI works on the task
+  1. Sends your prompt to the selected AI agent
+  2. AI agent works on the task
   3. Checks output for completion promise
   4. If not complete, repeats with same prompt
   5. AI sees its previous work in files
@@ -157,6 +217,8 @@ if (args.includes("--status")) {
     console.log(`   Started:      ${state.startedAt}`);
     console.log(`   Elapsed:      ${elapsedStr}`);
     console.log(`   Promise:      ${state.completionPromise}`);
+    const agentLabel = state.agent ? (AGENTS[state.agent]?.configName ?? state.agent) : "OpenCode";
+    console.log(`   Agent:        ${agentLabel}`);
     if (state.model) console.log(`   Model:        ${state.model}`);
     console.log(`   Prompt:       ${state.prompt.substring(0, 60)}${state.prompt.length > 60 ? "..." : ""}`);
   } else {
@@ -279,6 +341,7 @@ let minIterations = 1; // default: 1 iteration minimum
 let maxIterations = 0; // 0 = unlimited
 let completionPromise = "COMPLETE";
 let model = "";
+let agentType: AgentType = "opencode";
 let autoCommit = true;
 let disablePlugins = false;
 let allowAllPermissions = false;
@@ -292,7 +355,14 @@ const promptParts: string[] = [];
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
 
-  if (arg === "--min-iterations") {
+  if (arg === "--agent") {
+    const val = args[++i];
+    if (!val || !["opencode", "claude-code"].includes(val)) {
+      console.error("Error: --agent requires: 'opencode' or 'claude-code'");
+      process.exit(1);
+    }
+    agentType = val as AgentType;
+  } else if (arg === "--min-iterations") {
     const val = args[++i];
     if (!val || isNaN(parseInt(val))) {
       console.error("Error: --min-iterations requires a number");
@@ -408,6 +478,7 @@ interface RalphState {
   prompt: string;
   startedAt: string;
   model: string;
+  agent: AgentType;
 }
 
 // Create or update state
@@ -460,7 +531,8 @@ function ensureRalphConfig(options: { filterPlugins?: boolean; allowAllPermissio
   }
   const configPath = join(stateDir, "ralph-opencode.config.json");
   const userConfigPath = join(process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? "", ".config"), "opencode", "opencode.json");
-  const projectConfigPath = join(process.cwd(), ".opencode", "opencode.json");
+  const projectConfigPath = join(process.cwd(), ".ralph", "opencode.json");
+  const legacyProjectConfigPath = join(process.cwd(), ".opencode", "opencode.json");
 
   const config: Record<string, unknown> = {
     $schema: "https://opencode.ai/config.json",
@@ -471,6 +543,7 @@ function ensureRalphConfig(options: { filterPlugins?: boolean; allowAllPermissio
     const plugins = [
       ...loadPluginsFromConfig(userConfigPath),
       ...loadPluginsFromConfig(projectConfigPath),
+      ...loadPluginsFromConfig(legacyProjectConfigPath),
     ];
     config.plugin = Array.from(new Set(plugins)).filter(p => /auth/i.test(p));
   }
@@ -498,6 +571,18 @@ function ensureRalphConfig(options: { filterPlugins?: boolean; allowAllPermissio
 
   writeFileSync(configPath, JSON.stringify(config, null, 2));
   return configPath;
+}
+
+async function validateAgent(agent: AgentConfig): Promise<void> {
+  try {
+    const result = await $`which ${agent.command}`.quiet();
+    if (result.exitCode !== 0) {
+      throw new Error("not found");
+    }
+  } catch {
+    console.error(`Error: ${agent.configName} CLI ('${agent.command}') not found.`);
+    process.exit(1);
+  }
 }
 
 // Build the full prompt with iteration context
@@ -607,13 +692,12 @@ function formatToolSummary(toolCounts: Map<string, number>, maxItems = 6): strin
   return parts.join(" • ");
 }
 
-function collectToolSummaryFromText(text: string): Map<string, number> {
+function collectToolSummaryFromText(text: string, agent: AgentConfig): Map<string, number> {
   const counts = new Map<string, number>();
   const lines = text.split(/\r?\n/);
   for (const line of lines) {
-    const match = stripAnsi(line).match(/^\|\s{2}([A-Za-z0-9_-]+)/);
-    if (match) {
-      const tool = match[1];
+    const tool = agent.parseToolOutput(line);
+    if (tool) {
       counts.set(tool, (counts.get(tool) ?? 0) + 1);
     }
   }
@@ -648,6 +732,7 @@ async function streamProcessOutput(
     toolSummaryIntervalMs: number;
     heartbeatIntervalMs: number;
     iterationStart: number;
+    agent: AgentConfig;
   },
 ): Promise<{ stdoutText: string; stderrText: string; toolCounts: Map<string, number> }> {
   const toolCounts = new Map<string, number>();
@@ -658,6 +743,7 @@ async function streamProcessOutput(
   let lastToolSummaryAt = 0;
 
   const compactTools = options.compactTools;
+  const parseToolOutput = options.agent.parseToolOutput;
 
   const maybePrintToolSummary = (force = false) => {
     if (!compactTools || toolCounts.size === 0) return;
@@ -675,12 +761,13 @@ async function streamProcessOutput(
 
   const handleLine = (line: string, isError: boolean) => {
     lastActivityAt = Date.now();
-    const match = stripAnsi(line).match(/^\|\s{2}([A-Za-z0-9_-]+)/);
-    if (compactTools && match) {
-      const tool = match[1];
+    const tool = parseToolOutput(line);
+    if (tool) {
       toolCounts.set(tool, (toolCounts.get(tool) ?? 0) + 1);
-      maybePrintToolSummary();
-      return;
+      if (compactTools) {
+        maybePrintToolSummary();
+        return;
+      }
     }
     if (line.length === 0) {
       console.log("");
@@ -866,10 +953,16 @@ async function runRalphLoop(): Promise<void> {
     process.exit(1);
   }
 
+  const agentConfig = AGENTS[agentType];
+  await validateAgent(agentConfig);
+  if (disablePlugins && agentConfig.type === "claude-code") {
+    console.warn("Warning: --no-plugins has no effect with Claude Code agent");
+  }
+
   console.log(`
 ╔══════════════════════════════════════════════════════════════════╗
 ║                    Ralph Wiggum Loop                            ║
-║            Iterative AI Development with OpenCode                ║
+║         Iterative AI Development with ${agentConfig.configName.padEnd(20, " ")}        ║
 ╚══════════════════════════════════════════════════════════════════╝
 `);
 
@@ -883,6 +976,7 @@ async function runRalphLoop(): Promise<void> {
     prompt,
     startedAt: new Date().toISOString(),
     model,
+    agent: agentType,
   };
 
   saveState(state);
@@ -905,8 +999,11 @@ async function runRalphLoop(): Promise<void> {
   console.log(`Completion promise: ${completionPromise}`);
   console.log(`Min iterations: ${minIterations}`);
   console.log(`Max iterations: ${maxIterations > 0 ? maxIterations : "unlimited"}`);
+  console.log(`Agent: ${agentConfig.configName}`);
   if (model) console.log(`Model: ${model}`);
-  if (disablePlugins) console.log("OpenCode plugins: non-auth plugins disabled");
+  if (disablePlugins && agentConfig.type === "opencode") {
+    console.log("OpenCode plugins: non-auth plugins disabled");
+  }
   if (allowAllPermissions) console.log("Permissions: auto-approve all tools");
   console.log("");
   console.log("Starting loop... (Ctrl+C to stop)");
@@ -969,23 +1066,19 @@ async function runRalphLoop(): Promise<void> {
 
     try {
       // Build command arguments
-      const cmdArgs = ["run"];
-      if (model) {
-        cmdArgs.push("-m", model);
-      }
-      cmdArgs.push(fullPrompt);
-
-      const env = { ...process.env };
-      if (disablePlugins || allowAllPermissions) {
-        env.OPENCODE_CONFIG = ensureRalphConfig({
-          filterPlugins: disablePlugins,
-          allowAllPermissions: allowAllPermissions,
-        });
+      const cmdArgs = agentConfig.buildArgs(fullPrompt, model);
+      if (agentType === "claude-code" && allowAllPermissions) {
+        cmdArgs.push("--dangerously-skip-permissions");
       }
 
-      // Run opencode using spawn for better argument handling
+      const env = agentConfig.buildEnv({
+        filterPlugins: disablePlugins,
+        allowAllPermissions: allowAllPermissions,
+      });
+
+      // Run agent using spawn for better argument handling
       // stdin is inherited so users can respond to permission prompts if needed
-      currentProc = Bun.spawn(["opencode", ...cmdArgs], {
+      currentProc = Bun.spawn([agentConfig.command, ...cmdArgs], {
         env,
         stdin: "inherit",
         stdout: "pipe",
@@ -1003,6 +1096,7 @@ async function runRalphLoop(): Promise<void> {
           toolSummaryIntervalMs: 3000,
           heartbeatIntervalMs: 10000,
           iterationStart,
+          agent: agentConfig,
         });
         result = streamed.stdoutText;
         stderr = streamed.stderrText;
@@ -1011,7 +1105,7 @@ async function runRalphLoop(): Promise<void> {
         const stdoutPromise = new Response(proc.stdout).text();
         const stderrPromise = new Response(proc.stderr).text();
         [result, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
-        toolCounts = collectToolSummaryFromText(`${result}\n${stderr}`);
+        toolCounts = collectToolSummaryFromText(`${result}\n${stderr}`, agentConfig);
       }
 
       const exitCode = await exitCodePromise;
@@ -1095,7 +1189,7 @@ async function runRalphLoop(): Promise<void> {
         console.log(`   💡 Tip: Use 'ralph --add-context "hint"' in another terminal to guide the agent`);
       }
 
-      if (detectPlaceholderPluginError(combinedOutput)) {
+      if (agentType === "opencode" && detectPlaceholderPluginError(combinedOutput)) {
         console.error(
           "\n❌ OpenCode tried to load the legacy 'ralph-wiggum' plugin. This package is CLI-only.",
         );
@@ -1107,7 +1201,7 @@ async function runRalphLoop(): Promise<void> {
       }
 
       if (exitCode !== 0) {
-        console.warn(`\n⚠️  OpenCode exited with code ${exitCode}. Continuing to next iteration.`);
+        console.warn(`\n⚠️  ${agentConfig.configName} exited with code ${exitCode}. Continuing to next iteration.`);
       }
 
       // Check for completion

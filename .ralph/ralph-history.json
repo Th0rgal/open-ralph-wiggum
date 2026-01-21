@@ -1,0 +1,21 @@
+{
+  "iterations": [
+    {
+      "iteration": 1,
+      "startedAt": "2026-01-21T09:31:31.230Z",
+      "endedAt": "2026-01-21T09:31:54.200Z",
+      "durationMs": 22798,
+      "toolsUsed": {},
+      "filesModified": [],
+      "exitCode": 0,
+      "completionDetected": false,
+      "errors": []
+    }
+  ],
+  "totalDurationMs": 22798,
+  "struggleIndicators": {
+    "repeatedErrors": {},
+    "noProgressIterations": 1,
+    "shortIterations": 1
+  }
+}

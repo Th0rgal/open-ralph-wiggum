@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 520" role="img" aria-label="Ralph architecture diagram">
+  <style>
+    .bg { fill: #0f1218; }
+    .box { fill: #141a23; stroke: #e6e6e6; stroke-width: 1.5; }
+    .line { stroke: #e6e6e6; stroke-width: 1.5; }
+    .text { fill: #f3f3f3; font-family: Menlo, Consolas, Monaco, monospace; font-size: 16px; }
+    .small { font-size: 13px; opacity: 0.9; }
+    .muted { opacity: 0.7; }
+  </style>
+
+  <rect class="bg" x="0" y="0" width="1000" height="520" rx="0" />
+
+  <!-- Top boxes -->
+  <rect class="box" x="390" y="30" width="220" height="44" rx="0" />
+  <text class="text" x="500" y="58" text-anchor="middle">ralph CLI</text>
+
+  <rect class="box" x="240" y="114" width="520" height="48" rx="0" />
+  <text class="text small muted" x="500" y="144" text-anchor="middle">agent CLI: codex | claude | droid</text>
+
+  <!-- Arrow from top to agent (gap matches lower arrows) -->
+  <line class="line" x1="500" y1="74" x2="500" y2="96" />
+  <polygon points="496,96 500,104 504,96" fill="#e6e6e6" />
+
+  <!-- Branch lines (gap for heads) -->
+  <line class="line" x1="500" y1="162" x2="500" y2="200" />
+  <line class="line" x1="500" y1="200" x2="280" y2="200" />
+  <line class="line" x1="500" y1="200" x2="720" y2="200" />
+  <line class="line" x1="280" y1="200" x2="280" y2="214" />
+  <line class="line" x1="720" y1="200" x2="720" y2="214" />
+  <polygon points="276,214 280,222 284,214" fill="#e6e6e6" />
+  <polygon points="716,214 720,222 724,214" fill="#e6e6e6" />
+
+  <!-- Bottom boxes -->
+  <rect class="box" x="90" y="226" width="380" height="230" rx="0" />
+  <text class="text" x="110" y="256">.agents/ralph/</text>
+  <text class="text small muted" x="110" y="278">local overrides (optional)</text>
+  <text class="text small" x="110" y="306">loop.sh</text>
+  <text class="text small" x="110" y="328">PROMPT_build.md</text>
+  <text class="text small" x="110" y="350">references/</text>
+  <text class="text small" x="110" y="372">log-activity.sh</text>
+  <text class="text small" x="110" y="394">config.sh (optional)</text>
+
+  <rect class="box" x="530" y="226" width="380" height="230" rx="0" />
+  <text class="text" x="550" y="256">.ralph/</text>
+  <text class="text small muted" x="550" y="278">state + logs</text>
+  <text class="text small" x="550" y="306">errors.log</text>
+  <text class="text small" x="550" y="328">progress.md</text>
+  <text class="text small" x="550" y="350">guardrails.md</text>
+  <text class="text small" x="550" y="372">activity.log</text>
+  <text class="text small" x="550" y="394">runs/</text>
+
+  <text class="text small muted" x="500" y="500" text-anchor="middle">
+    Local templates override bundled defaults. State persists between runs.
+  </text>
+</svg>
