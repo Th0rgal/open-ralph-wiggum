@@ -12,17 +12,22 @@ if ! command -v bun &> /dev/null; then
     exit 1
 fi
 
-# Check for agent CLI (OpenCode or Claude Code)
-if ! command -v opencode &> /dev/null && ! command -v claude &> /dev/null; then
-    echo "Error: OpenCode or Claude Code is required but not installed."
+# Check for agent CLI (OpenCode, Claude Code, or Codex)
+if ! command -v opencode &> /dev/null && ! command -v claude &> /dev/null && ! command -v codex &> /dev/null; then
+    echo "Error: OpenCode, Claude Code, or Codex is required but not installed."
     echo "Install OpenCode: npm install -g opencode-ai"
     echo "Install Claude Code: https://claude.ai/code"
+    echo "Install Codex: https://developers.openai.com/codex/"
     exit 1
 fi
 
-if ! command -v opencode &> /dev/null && command -v claude &> /dev/null; then
+if ! command -v opencode &> /dev/null; then
     echo "Warning: OpenCode not found. Default agent is OpenCode."
-    echo "Use --agent claude-code or install OpenCode."
+    if command -v claude &> /dev/null; then
+        echo "Use --agent claude-code or install OpenCode."
+    elif command -v codex &> /dev/null; then
+        echo "Use --agent codex or install OpenCode."
+    fi
 fi
 
 # Get script directory

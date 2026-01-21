@@ -10,16 +10,21 @@ if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
   exit 1
 }
 
-# Check for agent CLI (OpenCode or Claude Code)
+# Check for agent CLI (OpenCode, Claude Code, or Codex)
 $hasOpenCode = Get-Command opencode -ErrorAction SilentlyContinue
 $hasClaude = Get-Command claude -ErrorAction SilentlyContinue
-if (-not $hasOpenCode -and -not $hasClaude) {
-  Write-Error "OpenCode or Claude Code is required but not installed. Install OpenCode: npm install -g opencode-ai. Install Claude Code: https://claude.ai/code"
+$hasCodex = Get-Command codex -ErrorAction SilentlyContinue
+if (-not $hasOpenCode -and -not $hasClaude -and -not $hasCodex) {
+  Write-Error "OpenCode, Claude Code, or Codex is required but not installed. Install OpenCode: npm install -g opencode-ai. Install Claude Code: https://claude.ai/code. Install Codex: https://developers.openai.com/codex/"
   exit 1
 }
 
-if (-not $hasOpenCode -and $hasClaude) {
-  Write-Warning "OpenCode not found. Default agent is OpenCode. Use --agent claude-code or install OpenCode."
+if (-not $hasOpenCode) {
+  if ($hasClaude) {
+    Write-Warning "OpenCode not found. Default agent is OpenCode. Use --agent claude-code or install OpenCode."
+  } elseif ($hasCodex) {
+    Write-Warning "OpenCode not found. Default agent is OpenCode. Use --agent codex or install OpenCode."
+  }
 }
 
 # Get script directory

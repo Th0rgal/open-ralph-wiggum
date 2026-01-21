@@ -593,12 +593,9 @@ function ensureRalphConfig(options: { filterPlugins?: boolean; allowAllPermissio
 }
 
 async function validateAgent(agent: AgentConfig): Promise<void> {
-  try {
-    const result = await $`which ${agent.command}`.quiet();
-    if (result.exitCode !== 0) {
-      throw new Error("not found");
-    }
-  } catch {
+  // Use Bun.which() for cross-platform executable detection (works on Windows, macOS, Linux)
+  const path = Bun.which(agent.command);
+  if (!path) {
     console.error(`Error: ${agent.configName} CLI ('${agent.command}') not found.`);
     process.exit(1);
   }
