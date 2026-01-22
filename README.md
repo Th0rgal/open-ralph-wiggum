@@ -167,8 +167,8 @@ ralph --add-task "Implement user authentication"
 # Remove task by index
 ralph --remove-task 3
 
-# Show status including tasks
-ralph --status --tasks
+# Show status (tasks shown automatically when tasks mode is active)
+ralph --status
 ```
 
 #### How Tasks Mode Works
@@ -214,7 +214,7 @@ ralph --clear-context
 The `--status` command shows:
 - **Active loop info**: Current iteration, elapsed time, prompt
 - **Pending context**: Any hints queued for next iteration
-- **Current tasks**: When used with `--tasks`, shows task list and progress
+- **Current tasks**: Automatically shown when tasks mode is active (or use `--tasks`)
 - **Iteration history**: Last 5 iterations with tools used, duration
 - **Struggle indicators**: Warnings if agent is stuck (no progress, repeated errors)
 

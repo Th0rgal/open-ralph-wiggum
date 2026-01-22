@@ -237,7 +237,8 @@ if (args.includes("--status")) {
   const state = loadState();
   const history = loadHistory();
   const context = existsSync(contextPath) ? readFileSync(contextPath, "utf-8").trim() : null;
-  const showTasks = args.includes("--tasks") || args.includes("-t");
+  // Show tasks if explicitly requested OR if active loop has tasks mode enabled
+  const showTasks = args.includes("--tasks") || args.includes("-t") || state?.tasksMode;
 
   console.log(`
 ╔══════════════════════════════════════════════════════════════════╗
@@ -895,7 +896,12 @@ function clearContext(): void {
   }
 }
 
-function buildPrompt(state: RalphState, agent: AgentConfig): string {
+/**
+ * Build the prompt for the current iteration.
+ * @param state - Current loop state
+ * @param _agent - Agent config (reserved for future agent-specific prompt customization)
+ */
+function buildPrompt(state: RalphState, _agent: AgentConfig): string {
   const context = loadContext();
   const contextSection = context
     ? `
