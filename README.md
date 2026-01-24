@@ -1,15 +1,16 @@
 <p align="center">
-  <h1 align="center">Ralph Wiggum for OpenCode</h1>
+  <h1 align="center">Open Ralph Wiggum</h1>
+  <h3 align="center">Autonomous Agentic Loop for Claude Code, Codex & OpenCode</h3>
 </p>
 
 <p align="center">
-  <img src="screenshot.webp" alt="Ralph Wiggum Screenshot" />
+  <img src="screenshot.webp" alt="Open Ralph Wiggum - Iterative AI coding loop for Claude Code and Codex" />
 </p>
 
 <p align="center">
-  <strong>Iterative AI development loops. Same prompt. Persistent progress.</strong><br>
-  <em>Supports OpenCode (default), Claude Code, and Codex via <code>--agent</code>.</em><br>
-  <em>Based on <a href="https://ghuntley.com/ralph/">ghuntley.com/ralph</a></em>
+  <strong>Run any AI coding agent in a self-correcting loop until your task is done.</strong><br>
+  <em>Works with <b>Claude Code</b>, <b>OpenAI Codex</b>, and <b>OpenCode</b> — switch agents with <code>--agent</code>.</em><br>
+  <em>Based on the <a href="https://ghuntley.com/ralph/">Ralph Wiggum technique</a> by Geoffrey Huntley</em>
 </p>
 
 <p align="center">
@@ -19,7 +20,8 @@
 </p>
 
 <p align="center">
-  <a href="#what-is-ralph">What is Ralph?</a> •
+  <a href="#supported-agents">Supported Agents</a> •
+  <a href="#what-is-open-ralph-wiggum">What is Ralph?</a> •
   <a href="#installation">Installation</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#commands">Commands</a>
@@ -32,24 +34,62 @@
 
 ---
 
-## What is Ralph?
+## Supported Agents
 
-Ralph is a development methodology where an AI agent receives the **same prompt repeatedly** until it completes a task. Each iteration, the AI sees its previous work in files and git history, enabling self-correction and incremental progress.
+Open Ralph Wiggum works with multiple AI coding agents. Switch between them using the `--agent` flag:
 
-This package provides a **CLI-only** implementation (no OpenCode/Claude Code/Codex plugin).
+| Agent | Flag | Description |
+|-------|------|-------------|
+| **Claude Code** | `--agent claude-code` | Anthropic's Claude Code CLI for autonomous coding |
+| **Codex** | `--agent codex` | OpenAI's Codex CLI for AI-powered development |
+| **OpenCode** | `--agent opencode` | Default agent, open-source AI coding assistant |
 
 ```bash
-# The essence of Ralph (agent CLI varies):
+# Use Claude Code
+ralph "Build a REST API" --agent claude-code --max-iterations 10
+
+# Use OpenAI Codex
+ralph "Create a CLI tool" --agent codex --max-iterations 10
+
+# Use OpenCode (default)
+ralph "Fix the failing tests" --max-iterations 10
+```
+
+---
+
+## What is Open Ralph Wiggum?
+
+Open Ralph Wiggum implements the **Ralph Wiggum technique** — an autonomous agentic loop where an AI coding agent (Claude Code, Codex, or OpenCode) receives the **same prompt repeatedly** until it completes a task. Each iteration, the AI sees its previous work in files and git history, enabling self-correction and incremental progress.
+
+This is a **CLI tool** that wraps any supported AI coding agent in a persistent development loop. No plugins required — just install and run.
+
+```bash
+# The essence of the Ralph loop:
 while true; do
-  opencode run "Build feature X. Output <promise>DONE</promise> when complete."
+  claude-code "Build feature X. Output <promise>DONE</promise> when complete."  # or codex, opencode
 done
 ```
 
-Use `--agent claude-code` or `--agent codex` to run the loop with Claude Code or Codex instead of OpenCode.
+**Why this works:** The AI doesn't talk to itself between iterations. It sees the same prompt each time, but the codebase has changed from previous iterations. This creates a powerful feedback loop where the agent iteratively improves its work until all tests pass.
 
-**The AI doesn't talk to itself.** It sees the same prompt each time, but the files have changed from previous iterations. This creates a feedback loop where the AI iteratively improves its work until success.
+### Multi-Agent Flexibility
 
-## Why Ralph?
+Switch between AI coding agents without changing your workflow:
+
+- **Claude Code** (`--agent claude-code`) — Anthropic's powerful coding agent
+- **Codex** (`--agent codex`) — OpenAI's code-specialized model
+- **OpenCode** (`--agent opencode`) — Open-source default option
+
+## Key Features
+
+- **Multi-Agent Support** — Use Claude Code, Codex, or OpenCode with the same workflow
+- **Self-Correcting Loops** — Agent sees its previous work and fixes its own mistakes
+- **Autonomous Execution** — Set it running and come back to finished code
+- **Task Tracking** — Built-in task management with `--tasks` mode
+- **Live Monitoring** — Check progress with `--status` from another terminal
+- **Mid-Loop Hints** — Inject guidance with `--add-context` without stopping
+
+## Why Use an Agentic Loop?
 
 | Benefit | How it works |
 |---------|--------------|
@@ -62,7 +102,12 @@ Use `--agent claude-code` or `--agent codex` to run the loop with Claude Code or
 
 ## Installation
 
-**Prerequisites:** [Bun](https://bun.sh) and at least one supported agent CLI: [OpenCode](https://opencode.ai), [Claude Code](https://claude.ai/code), or [Codex](https://developers.openai.com/codex/)
+**Prerequisites:**
+- [Bun](https://bun.sh) runtime
+- At least one AI coding agent CLI:
+  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — Anthropic's Claude Code CLI
+  - [Codex](https://github.com/openai/codex) — OpenAI's Codex CLI
+  - [OpenCode](https://opencode.ai) — Open-source AI coding assistant
 
 ### npm (recommended)
 
@@ -80,18 +125,17 @@ bun add -g @th0rgal/ralph-wiggum
 
 ```bash
 git clone https://github.com/Th0rgal/ralph-wiggum
-cd opencode-ralph-wiggum
+cd ralph-wiggum
 ./install.sh
 ```
 
 ```powershell
 git clone https://github.com/Th0rgal/ralph-wiggum
-cd opencode-ralph-wiggum
+cd ralph-wiggum
 .\install.ps1
 ```
 
-This installs:
-- `ralph` CLI command (global)
+This installs the `ralph` CLI command globally.
 
 ## Quick Start
 
@@ -256,9 +300,9 @@ Context is automatically consumed after one iteration.
 
 ## Troubleshooting
 
-### "ralph-wiggum" plugin errors
+### Plugin errors
 
-This package is **CLI-only**. If OpenCode tries to load a `ralph-wiggum` plugin,
+This package is **CLI-only**. If OpenCode tries to load a `ralph-wiggum` or `open-ralph-wiggum` plugin,
 remove it from your OpenCode `plugin` list (opencode.json), or run:
 
 ```bash
@@ -484,14 +528,46 @@ npm uninstall -g @th0rgal/ralph-wiggum
 npm uninstall -g @th0rgal/ralph-wiggum
 ```
 
+## Agent-Specific Notes
+
+### Claude Code
+
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) is Anthropic's official CLI for Claude. Use it with Open Ralph Wiggum for powerful autonomous coding:
+
+```bash
+ralph "Refactor the auth module and ensure tests pass" \
+  --agent claude-code \
+  --model claude-sonnet-4 \
+  --max-iterations 15
+```
+
+### OpenAI Codex
+
+[Codex](https://github.com/openai/codex) is OpenAI's code-specialized agent. Perfect for code generation and refactoring tasks:
+
+```bash
+ralph "Generate unit tests for all utility functions" \
+  --agent codex \
+  --model gpt-5-codex \
+  --max-iterations 10
+```
+
+### OpenCode
+
+[OpenCode](https://opencode.ai) is an open-source AI coding assistant. It's the default agent:
+
+```bash
+ralph "Fix all TypeScript errors" --max-iterations 10
+```
+
 ## Learn More
 
-- [Original technique by Geoffrey Huntley](https://ghuntley.com/ralph/)
+- [Original Ralph Wiggum technique by Geoffrey Huntley](https://ghuntley.com/ralph/)
 - [Ralph Orchestrator](https://github.com/mikeyobrien/ralph-orchestrator)
 
 ## See Also
 
-Check out [OpenAgent](https://github.com/Th0rgal/openagent) - a dashboard for orchestrating AI agents with workspace management, real-time monitoring, and multi-agent workflows.
+Check out [OpenAgent](https://github.com/Th0rgal/openagent) — a dashboard for orchestrating AI agents with workspace management, real-time monitoring, and multi-agent workflows.
 
 ## License
 
