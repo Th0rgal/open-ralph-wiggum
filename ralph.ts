@@ -19,7 +19,7 @@ const contextPath = join(stateDir, "ralph-context.md");
 const historyPath = join(stateDir, "ralph-history.json");
 const tasksPath = join(stateDir, "ralph-tasks.md");
 
-type AgentType = "opencode" | "claude-code" | "codex";
+type AgentType = "opencode" | "claude-code" | "codex" | "copilot";
 
 type AgentEnvOptions = { filterPlugins?: boolean; allowAllPermissions?: boolean };
 
@@ -112,6 +112,30 @@ const AGENTS: Record<AgentType, AgentConfig> = {
     },
     configName: "Codex",
   },
+  copilot: {
+    type: "copilot",
+    command: "copilot",
+    buildArgs: (promptText, modelName, options) => {
+      const cmdArgs = ["-p", promptText];
+      if (modelName) {
+        cmdArgs.push("--model", modelName);
+      }
+      if (options?.allowAllPermissions) {
+        cmdArgs.push("--allow-all", "--no-ask-user");
+      }
+      if (options?.extraFlags && options.extraFlags.length > 0) {
+        cmdArgs.push(...options.extraFlags);
+      }
+      return cmdArgs;
+    },
+    buildEnv: () => ({ ...process.env }),
+    // Provisional regex — needs empirical refinement based on actual Copilot CLI output format
+    parseToolOutput: line => {
+      const match = stripAnsi(line).match(/(?:Tool:|Using|Called|Running)\s+([A-Za-z0-9_-]+)/i);
+      return match ? match[1] : null;
+    },
+    configName: "Copilot CLI",
+  },
 };
 // Parse arguments
 const args = process.argv.slice(2);
@@ -128,7 +152,7 @@ Arguments:
   prompt              Task description for the AI to work on
 
 Options:
-  --agent AGENT       AI agent to use: opencode (default), claude-code, codex
+  --agent AGENT       AI agent to use: opencode (default), claude-code, codex, copilot
   --min-iterations N  Minimum iterations before completion allowed (default: 1)
   --max-iterations N  Maximum iterations before stopping (default: unlimited)
   --completion-promise TEXT  Phrase that signals completion (default: COMPLETE)
@@ -657,8 +681,8 @@ for (let i = 0; i < args.length; i++) {
 
   if (arg === "--agent") {
     const val = args[++i];
-    if (!val || !["opencode", "claude-code", "codex"].includes(val)) {
-      console.error("Error: --agent requires: 'opencode', 'claude-code', or 'codex'");
+    if (!val || !["opencode", "claude-code", "codex", "copilot"].includes(val)) {
+      console.error("Error: --agent requires: 'opencode', 'claude-code', 'codex', or 'copilot'");
       process.exit(1);
     }
     agentType = val as AgentType;
@@ -1368,6 +1392,9 @@ async function runRalphLoop(): Promise<void> {
   }
   if (disablePlugins && agentConfig.type === "codex") {
     console.warn("Warning: --no-plugins has no effect with Codex agent");
+  }
+  if (disablePlugins && agentConfig.type === "copilot") {
+    console.warn("Warning: --no-plugins has no effect with Copilot CLI agent");
   }
 
   console.log(`
