@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">Open Ralph Wiggum</h1>
-  <h3 align="center">Autonomous Agentic Loop for Claude Code, Codex & OpenCode</h3>
+  <h3 align="center">Autonomous Agentic Loop for Claude Code, Codex, Copilot CLI & OpenCode</h3>
 </p>
 
 <p align="center">
@@ -9,7 +9,7 @@
 
 <p align="center">
   <strong>Run any AI coding agent in a self-correcting loop until your task is done.</strong><br>
-  <em>Works with <b>Claude Code</b>, <b>OpenAI Codex</b>, and <b>OpenCode</b> — switch agents with <code>--agent</code>.</em><br>
+  <em>Works with <b>Claude Code</b>, <b>OpenAI Codex</b>, <b>Copilot CLI</b>, and <b>OpenCode</b> — switch agents with <code>--agent</code>.</em><br>
   <em>Based on the <a href="https://ghuntley.com/ralph/">Ralph Wiggum technique</a> by Geoffrey Huntley</em>
 </p>
 
@@ -42,6 +42,7 @@ Open Ralph Wiggum works with multiple AI coding agents. Switch between them usin
 |-------|------|-------------|
 | **Claude Code** | `--agent claude-code` | Anthropic's Claude Code CLI for autonomous coding |
 | **Codex** | `--agent codex` | OpenAI's Codex CLI for AI-powered development |
+| **Copilot CLI** | `--agent copilot` | GitHub Copilot CLI for agentic coding |
 | **OpenCode** | `--agent opencode` | Default agent, open-source AI coding assistant |
 
 ```bash
@@ -50,6 +51,9 @@ ralph "Build a REST API" --agent claude-code --max-iterations 10
 
 # Use OpenAI Codex
 ralph "Create a CLI tool" --agent codex --max-iterations 10
+
+# Use Copilot CLI
+ralph "Refactor the auth module" --agent copilot --max-iterations 10
 
 # Use OpenCode (default)
 ralph "Fix the failing tests" --max-iterations 10
@@ -78,6 +82,7 @@ Switch between AI coding agents without changing your workflow:
 
 - **Claude Code** (`--agent claude-code`) — Anthropic's powerful coding agent
 - **Codex** (`--agent codex`) — OpenAI's code-specialized model
+- **Copilot CLI** (`--agent copilot`) — GitHub's agentic coding tool
 - **OpenCode** (`--agent opencode`) — Open-source default option
 
 ## Key Features
@@ -107,6 +112,7 @@ Switch between AI coding agents without changing your workflow:
 - At least one AI coding agent CLI:
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — Anthropic's Claude Code CLI
   - [Codex](https://github.com/openai/codex) — OpenAI's Codex CLI
+  - [Copilot CLI](https://github.com/github/copilot-cli) — GitHub's Copilot CLI
   - [OpenCode](https://opencode.ai) — Open-source AI coding assistant
 
 ### npm (recommended)
@@ -157,6 +163,10 @@ ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise>
 ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
   --agent codex --model gpt-5-codex --max-iterations 5
 
+# Use Copilot CLI
+ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
+  --agent copilot --max-iterations 5
+
 # Complex project with Tasks Mode
 ralph "Build a full-stack web application with user auth and database" \
   --tasks --max-iterations 50
@@ -170,7 +180,7 @@ ralph "Build a full-stack web application with user auth and database" \
 ralph "<prompt>" [options]
 
 Options:
-  --agent AGENT            AI agent to use: opencode (default), claude-code, codex
+  --agent AGENT            AI agent to use: opencode (default), claude-code, codex, copilot
   --min-iterations N       Minimum iterations before completion allowed (default: 1)
   --max-iterations N       Stop after N iterations (default: unlimited)
   --completion-promise T   Text that signals completion (default: COMPLETE)
@@ -559,6 +569,36 @@ ralph "Generate unit tests for all utility functions" \
 ```bash
 ralph "Fix all TypeScript errors" --max-iterations 10
 ```
+
+### Copilot CLI
+
+[Copilot CLI](https://github.com/github/copilot-cli) is GitHub's agentic coding tool (public preview). It requires a GitHub Copilot subscription and authentication via `GH_TOKEN`, `GITHUB_TOKEN`, or prior `copilot /login`.
+
+**Install:**
+```bash
+npm install -g @github/copilot
+# or
+brew install copilot-cli
+```
+
+**Usage:**
+```bash
+ralph "Refactor the auth module and add tests" \
+  --agent copilot \
+  --max-iterations 15
+
+# With a specific model
+ralph "Build a REST API" \
+  --agent copilot \
+  --model claude-opus-4.6 \
+  --max-iterations 10
+```
+
+**Notes:**
+- Default model is Claude Sonnet 4.5; override with `--model`
+- `--allow-all` (default) maps to `--allow-all` + `--no-ask-user` in Copilot CLI
+- `--no-plugins` has no effect with Copilot CLI
+- Authentication: set `GH_TOKEN` / `GITHUB_TOKEN` env var, or run `copilot /login` first
 
 ## Learn More
 
