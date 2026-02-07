@@ -162,6 +162,16 @@ ralph "Build a full-stack web application with user auth and database" \
   --tasks --max-iterations 50
 ```
 
+## Environment Variables
+
+Configure agent binaries with these environment variables:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `RALPH_OPENCODE_BINARY` | Path to OpenCode CLI | `"opencode"` |
+| `RALPH_CLAUDE_BINARY` | Path to Claude Code CLI | `"claude"` |
+| `RALPH_CODEX_BINARY` | Path to Codex CLI | `"codex"` |
+
 ## Commands
 
 ### Running a Loop
