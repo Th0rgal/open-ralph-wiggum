@@ -37,7 +37,7 @@ interface AgentConfig {
 const AGENTS: Record<AgentType, AgentConfig> = {
   opencode: {
     type: "opencode",
-    command: "opencode",
+    command: process.env.RALPH_OPENCODE_BINARY || "opencode",
     buildArgs: (promptText, modelName, options) => {
       const cmdArgs = ["run"];
       if (modelName) {
@@ -67,7 +67,7 @@ const AGENTS: Record<AgentType, AgentConfig> = {
   },
   "claude-code": {
     type: "claude-code",
-    command: "claude",
+    command: process.env.RALPH_CLAUDE_BINARY || "claude",
     buildArgs: (promptText, modelName, options) => {
       const cmdArgs = ["-p", promptText];
       if (modelName) {
@@ -90,7 +90,7 @@ const AGENTS: Record<AgentType, AgentConfig> = {
   },
   codex: {
     type: "codex",
-    command: "codex",
+    command: process.env.RALPH_CODEX_BINARY || "codex",
     buildArgs: (promptText, modelName, options) => {
       const cmdArgs = ["exec"];
       if (modelName) {
