@@ -197,6 +197,7 @@ Options:
   --min-iterations N       Minimum iterations before completion allowed (default: 1)
   --max-iterations N       Stop after N iterations (default: unlimited)
   --completion-promise T   Text that signals completion (default: COMPLETE)
+  --abort-promise TEXT     Phrase that signals early abort (e.g., precondition failed)
   --tasks, -t              Enable Tasks Mode for structured task tracking
   --task-promise T         Text that signals task completion (default: READY_FOR_NEXT_TASK)
   --model MODEL            Model to use (agent-specific)
@@ -282,6 +283,7 @@ ralph "Build a REST API" --prompt-template ./my-template.md
 | `{{min_iterations}}` | Minimum iterations |
 | `{{prompt}}` | The user's task prompt |
 | `{{completion_promise}}` | Completion promise text (e.g., "COMPLETE") |
+| `{{abort_promise}}` | Abort promise text (if configured) |
 | `{{task_promise}}` | Task promise text (for tasks mode) |
 | `{{context}}` | Additional context added mid-loop |
 | `{{tasks}}` | Task list content (for tasks mode) |

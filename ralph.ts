@@ -178,6 +178,7 @@ Options:
   --min-iterations N  Minimum iterations before completion allowed (default: 1)
   --max-iterations N  Maximum iterations before stopping (default: unlimited)
   --completion-promise TEXT  Phrase that signals completion (default: COMPLETE)
+  --abort-promise TEXT  Phrase that signals early abort (e.g., precondition failed)
   --tasks, -t         Enable Tasks Mode for structured task tracking
   --task-promise TEXT Phrase that signals task completion (default: READY_FOR_NEXT_TASK)
   --model MODEL       Model to use (agent-specific, e.g., anthropic/claude-sonnet)
@@ -698,6 +699,7 @@ let prompt = "";
 let minIterations = 1; // default: 1 iteration minimum
 let maxIterations = 0; // 0 = unlimited
 let completionPromise = "COMPLETE";
+let abortPromise = ""; // Optional abort promise for early exit on precondition failure
 let tasksMode = false;
 let taskPromise = "READY_FOR_NEXT_TASK";
 let model = "";
@@ -781,6 +783,13 @@ for (let i = 0; i < args.length; i++) {
       process.exit(1);
     }
     completionPromise = val;
+  } else if (arg === "--abort-promise") {
+    const val = args[++i];
+    if (!val) {
+      console.error("Error: --abort-promise requires a value");
+      process.exit(1);
+    }
+    abortPromise = val;
   } else if (arg === "--tasks" || arg === "-t") {
     tasksMode = true;
   } else if (arg === "--task-promise") {
@@ -910,6 +919,7 @@ interface RalphState {
   minIterations: number;
   maxIterations: number;
   completionPromise: string;
+  abortPromise?: string; // Optional abort signal for early exit
   tasksMode: boolean;
   taskPromise: string;
   prompt: string;
@@ -1051,6 +1061,7 @@ function clearContext(): void {
  * - {{min_iterations}} - Minimum iterations
  * - {{prompt}} - The user's task prompt
  * - {{completion_promise}} - The completion promise text
+ * - {{abort_promise}} - The abort promise text (if configured)
  * - {{task_promise}} - The task promise text (for tasks mode)
  * - {{context}} - Any additional context added mid-loop
  * - {{tasks}} - Task list content (for tasks mode)
@@ -1080,6 +1091,7 @@ function loadCustomPromptTemplate(templatePath: string, state: RalphState): stri
       .replace(/\{\{min_iterations\}\}/g, String(state.minIterations))
       .replace(/\{\{prompt\}\}/g, state.prompt)
       .replace(/\{\{completion_promise\}\}/g, state.completionPromise)
+      .replace(/\{\{abort_promise\}\}/g, state.abortPromise || "")
       .replace(/\{\{task_promise\}\}/g, state.taskPromise)
       .replace(/\{\{context\}\}/g, context)
       .replace(/\{\{tasks\}\}/g, tasksContent);
@@ -1605,6 +1617,7 @@ async function runRalphLoop(): Promise<void> {
     minIterations = existingState.minIterations;
     maxIterations = existingState.maxIterations;
     completionPromise = existingState.completionPromise;
+    abortPromise = existingState.abortPromise ?? "";
     tasksMode = existingState.tasksMode;
     taskPromise = existingState.taskPromise;
     prompt = existingState.prompt;
@@ -1658,6 +1671,7 @@ async function runRalphLoop(): Promise<void> {
     minIterations,
     maxIterations,
     completionPromise,
+    abortPromise: abortPromise || undefined,
     tasksMode,
     taskPromise,
     prompt,
@@ -1838,6 +1852,7 @@ async function runRalphLoop(): Promise<void> {
 
       const combinedOutput = `${result}\n${stderr}`;
       const completionDetected = checkCompletion(combinedOutput, completionPromise);
+      const abortDetected = abortPromise ? checkCompletion(combinedOutput, abortPromise) : false;
       const taskCompletionDetected = tasksMode ? checkCompletion(combinedOutput, taskPromise) : false;
 
       const iterationDuration = Date.now() - iterationStart;
@@ -1943,6 +1958,19 @@ async function runRalphLoop(): Promise<void> {
 
       if (exitCode !== 0) {
         console.warn(`\n⚠️  ${agentConfig.configName} exited with code ${exitCode}. Continuing to next iteration.`);
+      }
+
+      // Check for abort signal (early exit on precondition failure)
+      if (abortDetected) {
+        console.log(`\n╔══════════════════════════════════════════════════════════════════╗`);
+        console.log(`║  ⛔ Abort signal detected: <promise>${abortPromise}</promise>`);
+        console.log(`║  Loop aborted after ${state.iteration} iteration(s)`);
+        console.log(`║  Total time: ${formatDurationLong(history.totalDurationMs)}`);
+        console.log(`╚══════════════════════════════════════════════════════════════════╝`);
+        clearState();
+        clearHistory();
+        clearContext();
+        process.exit(1); // Exit with error code to indicate abort
       }
 
       // Check for task completion (tasks mode only)
