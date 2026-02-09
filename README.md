@@ -181,6 +181,9 @@ Configure agent binaries with these environment variables:
 | `RALPH_OPENCODE_BINARY` | Path to OpenCode CLI | `"opencode"` |
 | `RALPH_CLAUDE_BINARY` | Path to Claude Code CLI | `"claude"` |
 | `RALPH_CODEX_BINARY` | Path to Codex CLI | `"codex"` |
+| `RALPH_COPILOT_BINARY` | Path to Copilot CLI | `"copilot"` |
+
+**Note for Windows users:** Ralph automatically resolves `.cmd` extensions for npm-installed CLIs. If you encounter "command not found" errors, you can use these environment variables to specify the full path to the executable.
 
 ## Commands
 
@@ -329,6 +332,32 @@ remove it from your OpenCode `plugin` list (opencode.json), or run:
 ```bash
 ralph "Your task" --no-plugins
 ```
+
+### ProviderModelNotFoundError / Model not configured
+
+If you see `ProviderModelNotFoundError` or "Provider returned error", you need to configure a default model:
+
+**For OpenCode:**
+1. Edit `~/.config/opencode/opencode.json`:
+   ```json
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "model": "your-provider/model-name"
+   }
+   ```
+2. Or use the `--model` flag: `ralph "task" --model provider/model`
+
+**For other agents:**
+Use the `--model` flag to specify the model explicitly.
+
+### "command not found" on Windows
+
+Ralph automatically tries `.cmd` extensions on Windows. If you still have issues:
+1. Set the full path using environment variables:
+   ```powershell
+   $env:RALPH_OPENCODE_BINARY = "C:\path\to\opencode.cmd"
+   ```
+2. Or add the CLI to your PATH
 
 ### "bun: command not found"
 

@@ -10,7 +10,10 @@ import { $ } from "bun";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "fs";
 import { join } from "path";
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
+
+// Detect Windows platform for command resolution
+const IS_WINDOWS = process.platform === "win32";
 
 // Context file path for mid-loop injection
 const stateDir = join(process.cwd(), ".ralph");
@@ -35,10 +38,28 @@ interface AgentConfig {
   configName: string;
 }
 
+/**
+ * Resolve a command for cross-platform compatibility.
+ * On Windows, many npm-installed CLIs require the .cmd extension.
+ */
+function resolveCommand(cmd: string, envOverride?: string): string {
+  if (envOverride) return envOverride;
+  // On Windows, try the .cmd version first if the base command isn't found
+  if (IS_WINDOWS) {
+    const cmdPath = Bun.which(cmd);
+    if (!cmdPath) {
+      const cmdWithExt = `${cmd}.cmd`;
+      const cmdExtPath = Bun.which(cmdWithExt);
+      if (cmdExtPath) return cmdWithExt;
+    }
+  }
+  return cmd;
+}
+
 const AGENTS: Record<AgentType, AgentConfig> = {
   opencode: {
     type: "opencode",
-    command: process.env.RALPH_OPENCODE_BINARY || "opencode",
+    command: resolveCommand("opencode", process.env.RALPH_OPENCODE_BINARY),
     buildArgs: (promptText, modelName, options) => {
       const cmdArgs = ["run"];
       if (modelName) {
@@ -68,7 +89,7 @@ const AGENTS: Record<AgentType, AgentConfig> = {
   },
   "claude-code": {
     type: "claude-code",
-    command: process.env.RALPH_CLAUDE_BINARY || "claude",
+    command: resolveCommand("claude", process.env.RALPH_CLAUDE_BINARY),
     buildArgs: (promptText, modelName, options) => {
       const cmdArgs = ["-p", promptText];
       if (modelName) {
@@ -91,7 +112,7 @@ const AGENTS: Record<AgentType, AgentConfig> = {
   },
   codex: {
     type: "codex",
-    command: process.env.RALPH_CODEX_BINARY || "codex",
+    command: resolveCommand("codex", process.env.RALPH_CODEX_BINARY),
     buildArgs: (promptText, modelName, options) => {
       const cmdArgs = ["exec"];
       if (modelName) {
@@ -115,7 +136,7 @@ const AGENTS: Record<AgentType, AgentConfig> = {
   },
   copilot: {
     type: "copilot",
-    command: "copilot",
+    command: resolveCommand("copilot", process.env.RALPH_COPILOT_BINARY),
     buildArgs: (promptText, modelName, options) => {
       const cmdArgs = ["-p", promptText];
       if (modelName) {
@@ -1169,6 +1190,18 @@ function detectPlaceholderPluginError(output: string): boolean {
   return output.includes("ralph-wiggum is not yet ready for use. This is a placeholder package.");
 }
 
+/**
+ * Detect ProviderModelNotFoundError and provide helpful guidance.
+ * This error occurs when the default model is not configured in OpenCode.
+ * Related: Issues #22, #23
+ */
+function detectModelNotFoundError(output: string): boolean {
+  return output.includes("ProviderModelNotFoundError") ||
+         output.includes("Provider returned error") ||
+         output.includes("model not found") ||
+         output.includes("No model configured");
+}
+
 function stripAnsi(input: string): string {
   return input.replace(/\x1B\[[0-9;]*m/g, "");
 }
@@ -1771,6 +1804,24 @@ async function runRalphLoop(): Promise<void> {
         console.error(
           "Remove 'ralph-wiggum' from your opencode.json plugin list, or re-run with --no-plugins.",
         );
+        clearState();
+        process.exit(1);
+      }
+
+      // Detect model configuration errors (Issues #22, #23)
+      if (detectModelNotFoundError(combinedOutput)) {
+        console.error("\n❌ Model configuration error detected.");
+        console.error("   The agent could not find a valid model to use.");
+        console.error("\n   To fix this:");
+        if (currentAgent === "opencode") {
+          console.error("   1. Set a default model in ~/.config/opencode/opencode.json:");
+          console.error('      { "model": "your-provider/model-name" }');
+          console.error("   2. Or use the --model flag: ralph \"task\" --model provider/model");
+        } else {
+          console.error(`   1. Use the --model flag: ralph \"task\" --agent ${currentAgent} --model model-name`);
+          console.error("   2. Or configure the default model in the agent's settings");
+        }
+        console.error("\n   See the agent's documentation for available models.");
         clearState();
         process.exit(1);
       }
