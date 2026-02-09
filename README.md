@@ -8,7 +8,6 @@
 </p>
 
 <p align="center">
-  <strong>Run any AI coding agent in a self-correcting loop until your task is done.</strong><br>
   <em>Works with <b>Claude Code</b>, <b>OpenAI Codex</b>, <b>Copilot CLI</b>, and <b>OpenCode</b> — switch agents with <code>--agent</code>.</em><br>
   <em>Based on the <a href="https://ghuntley.com/ralph/">Ralph Wiggum technique</a> by Geoffrey Huntley</em>
 </p>
@@ -29,7 +28,7 @@
 
 <p align="center">
   <strong>Tired of agents breaking your local environment?</strong><br>
-  <a href="https://github.com/Th0rgal/openagent">OpenAgent</a> gives each task an isolated Linux workspace. Self-hosted. Git-backed.
+  🏝️ <a href="https://github.com/Th0rgal/sandboxed.sh">sandboxed.sh</a> gives each task an isolated Linux workspace. Self-hosted. Git-backed.
 </p>
 
 ---
@@ -781,7 +780,7 @@ The `--status` command shows which agent and model was used for each iteration:
 
 ## See Also
 
-Check out [OpenAgent](https://github.com/Th0rgal/openagent) — a dashboard for orchestrating AI agents with workspace management, real-time monitoring, and multi-agent workflows.
+Check out 🏝️ [sandboxed.sh](https://github.com/Th0rgal/sandboxed.sh) — a dashboard for orchestrating AI agents with workspace management, real-time monitoring, and multi-agent workflows.
 
 ## License
 
