@@ -1067,6 +1067,7 @@ ${state.prompt}
 - Work on ONE task at a time from .ralph/ralph-tasks.md
 - ONLY output <promise>${state.taskPromise}</promise> when the current task is complete and marked in ralph-tasks.md
 - ONLY output <promise>${state.completionPromise}</promise> when ALL tasks are truly done
+- Output promise tags DIRECTLY - do not quote them, explain them, or say you "will" output them
 - Do NOT lie or output false promises to exit the loop
 - If stuck, try a different approach
 - Check your work before claiming completion
@@ -1101,6 +1102,7 @@ ${state.prompt}
 ## Critical Rules
 
 - ONLY output <promise>${state.completionPromise}</promise> when the task is truly done
+- Output the promise tag DIRECTLY - do not quote it, explain it, or say you "will" output it
 - Do NOT lie or output false promises to exit the loop
 - If stuck, try a different approach
 - Check your work before claiming completion
@@ -1176,10 +1178,57 @@ Unable to read .ralph/ralph-tasks.md
   }
 }
 
-// Check if output contains the completion promise
+/**
+ * Check if output contains a valid completion promise.
+ *
+ * To avoid false positives (Issue #28), we check that the promise:
+ * 1. Uses the exact <promise>...</promise> format
+ * 2. Is NOT preceded by negation words like "not", "don't", "won't", "will not"
+ * 3. Is NOT inside quotes (the model explaining what it will say)
+ *
+ * Valid: "<promise>COMPLETE</promise>"
+ * Invalid: "I will not output <promise>COMPLETE</promise> yet"
+ * Invalid: 'Once done, I\'ll say "<promise>COMPLETE</promise>"'
+ */
 function checkCompletion(output: string, promise: string): boolean {
-  const promisePattern = new RegExp(`<promise>\\s*${escapeRegex(promise)}\\s*</promise>`, "i");
-  return promisePattern.test(output);
+  const escapedPromise = escapeRegex(promise);
+  const promisePattern = new RegExp(`<promise>\\s*${escapedPromise}\\s*</promise>`, "gi");
+
+  const matches = output.match(promisePattern);
+  if (!matches) return false;
+
+  // Check each match for false positive indicators
+  for (const match of matches) {
+    const matchIndex = output.indexOf(match);
+    const contextBefore = output.substring(Math.max(0, matchIndex - 100), matchIndex).toLowerCase();
+
+    // Check for negation patterns before the promise
+    const negationPatterns = [
+      /\bnot\s+(yet\s+)?(say|output|write|respond|print)/,
+      /\bdon'?t\s+(say|output|write|respond|print)/,
+      /\bwon'?t\s+(say|output|write|respond|print)/,
+      /\bwill\s+not\s+(say|output|write|respond|print)/,
+      /\bshould\s+not\s+(say|output|write|respond|print)/,
+      /\bwouldn'?t\s+(say|output|write|respond|print)/,
+      /\bavoid\s+(saying|outputting|writing)/,
+      /\bwithout\s+(saying|outputting|writing)/,
+      /\bbefore\s+(saying|outputting|I\s+say)/,
+      /\buntil\s+(I\s+)?(say|output|can\s+say)/,
+    ];
+
+    const hasNegation = negationPatterns.some(pattern => pattern.test(contextBefore));
+    if (hasNegation) continue;
+
+    // Check if inside quotes (model explaining what it will say)
+    const quotesBefore = (contextBefore.match(/["'`]/g) || []).length;
+    // Odd number of quotes means we're inside a quoted string
+    if (quotesBefore % 2 === 1) continue;
+
+    // This match appears to be a genuine completion signal
+    return true;
+  }
+
+  return false;
 }
 
 function escapeRegex(str: string): string {
