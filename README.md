@@ -202,6 +202,7 @@ Options:
   --model MODEL            Model to use (agent-specific)
   --rotation LIST          Agent/model rotation for each iteration (comma-separated)
   --prompt-file, --file, -f  Read prompt content from a file
+  --prompt-template PATH   Use custom prompt template (see Custom Prompts)
   --no-stream              Buffer agent output and print at the end
   --verbose-tools          Print every tool line (disable compact tool summary)
   --no-plugins             Disable non-auth OpenCode plugins for this run (opencode only)
@@ -262,6 +263,44 @@ Example task file:
   - [ ] Create login page
   - [ ] Add JWT handling
 - [ ] Build dashboard UI
+```
+
+### Custom Prompt Templates
+
+You can fully customize the prompt sent to the agent using `--prompt-template`. This is useful for integrating with custom workflows or tools.
+
+```bash
+ralph "Build a REST API" --prompt-template ./my-template.md
+```
+
+**Available variables:**
+
+| Variable | Description |
+|----------|-------------|
+| `{{iteration}}` | Current iteration number |
+| `{{max_iterations}}` | Maximum iterations (or "unlimited") |
+| `{{min_iterations}}` | Minimum iterations |
+| `{{prompt}}` | The user's task prompt |
+| `{{completion_promise}}` | Completion promise text (e.g., "COMPLETE") |
+| `{{task_promise}}` | Task promise text (for tasks mode) |
+| `{{context}}` | Additional context added mid-loop |
+| `{{tasks}}` | Task list content (for tasks mode) |
+
+**Example template (`my-template.md`):**
+
+```markdown
+# Iteration {{iteration}} / {{max_iterations}}
+
+## Task
+{{prompt}}
+
+## Instructions
+1. Check beads for current status
+2. Decide what to do next
+3. When the epic in beads is complete, output:
+   <promise>{{completion_promise}}</promise>
+
+{{context}}
 ```
 
 ### Monitoring & Control

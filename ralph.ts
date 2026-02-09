@@ -187,6 +187,7 @@ Options:
                       Example: --rotation "opencode:claude-sonnet-4,claude-code:gpt-4o"
                       When used, --agent and --model are ignored
   --prompt-file, --file, -f  Read prompt content from a file
+  --prompt-template PATH  Use custom prompt template (supports variables)
   --no-stream         Buffer agent output and print at the end
   --verbose-tools     Print every tool line (disable compact tool summary)
   --no-plugins        Disable non-auth OpenCode plugins for this run (opencode only)
@@ -707,6 +708,7 @@ let autoCommit = true;
 let disablePlugins = false;
 let allowAllPermissions = true;
 let promptFile = "";
+let promptTemplatePath = ""; // Custom prompt template file
 let streamOutput = true;
 let verboseTools = false;
 let promptSource = "";
@@ -809,6 +811,13 @@ for (let i = 0; i < args.length; i++) {
       process.exit(1);
     }
     promptFile = val;
+  } else if (arg === "--prompt-template") {
+    const val = args[++i];
+    if (!val) {
+      console.error("Error: --prompt-template requires a file path");
+      process.exit(1);
+    }
+    promptTemplatePath = val;
   } else if (arg === "--no-stream") {
     streamOutput = false;
   } else if (arg === "--stream") {
@@ -904,6 +913,7 @@ interface RalphState {
   tasksMode: boolean;
   taskPromise: string;
   prompt: string;
+  promptTemplate?: string; // Custom prompt template path
   startedAt: string;
   model: string;
   agent: AgentType;
@@ -1034,11 +1044,65 @@ function clearContext(): void {
 }
 
 /**
+ * Load and process a custom prompt template.
+ * Supports the following variables:
+ * - {{iteration}} - Current iteration number
+ * - {{max_iterations}} - Maximum iterations (or "unlimited")
+ * - {{min_iterations}} - Minimum iterations
+ * - {{prompt}} - The user's task prompt
+ * - {{completion_promise}} - The completion promise text
+ * - {{task_promise}} - The task promise text (for tasks mode)
+ * - {{context}} - Any additional context added mid-loop
+ * - {{tasks}} - Task list content (for tasks mode)
+ */
+function loadCustomPromptTemplate(templatePath: string, state: RalphState): string | null {
+  if (!existsSync(templatePath)) {
+    console.error(`Error: Prompt template not found: ${templatePath}`);
+    process.exit(1);
+  }
+
+  try {
+    let template = readFileSync(templatePath, "utf-8");
+
+    // Load context
+    const context = loadContext() || "";
+
+    // Load tasks if in tasks mode
+    let tasksContent = "";
+    if (state.tasksMode && existsSync(tasksPath)) {
+      tasksContent = readFileSync(tasksPath, "utf-8");
+    }
+
+    // Replace variables
+    template = template
+      .replace(/\{\{iteration\}\}/g, String(state.iteration))
+      .replace(/\{\{max_iterations\}\}/g, state.maxIterations > 0 ? String(state.maxIterations) : "unlimited")
+      .replace(/\{\{min_iterations\}\}/g, String(state.minIterations))
+      .replace(/\{\{prompt\}\}/g, state.prompt)
+      .replace(/\{\{completion_promise\}\}/g, state.completionPromise)
+      .replace(/\{\{task_promise\}\}/g, state.taskPromise)
+      .replace(/\{\{context\}\}/g, context)
+      .replace(/\{\{tasks\}\}/g, tasksContent);
+
+    return template;
+  } catch (err) {
+    console.error(`Error reading prompt template: ${err}`);
+    process.exit(1);
+  }
+}
+
+/**
  * Build the prompt for the current iteration.
  * @param state - Current loop state
  * @param _agent - Agent config (reserved for future agent-specific prompt customization)
  */
 function buildPrompt(state: RalphState, _agent: AgentConfig): string {
+  // Use custom template if provided
+  if (promptTemplatePath) {
+    const customPrompt = loadCustomPromptTemplate(promptTemplatePath, state);
+    if (customPrompt) return customPrompt;
+  }
+
   const context = loadContext();
   const contextSection = context
     ? `
@@ -1544,6 +1608,7 @@ async function runRalphLoop(): Promise<void> {
     tasksMode = existingState.tasksMode;
     taskPromise = existingState.taskPromise;
     prompt = existingState.prompt;
+    promptTemplatePath = existingState.promptTemplate ?? "";
     model = existingState.model;
     agentType = existingState.agent;
     rotation = existingState.rotation ?? null;
@@ -1596,6 +1661,7 @@ async function runRalphLoop(): Promise<void> {
     tasksMode,
     taskPromise,
     prompt,
+    promptTemplate: promptTemplatePath || undefined,
     startedAt: new Date().toISOString(),
     model: initialModel,
     agent: initialAgentType,
