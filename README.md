@@ -31,6 +31,10 @@
   🏝️ <a href="https://github.com/Th0rgal/sandboxed.sh">sandboxed.sh</a> gives each task an isolated Linux workspace. Self-hosted. Git-backed.
 </p>
 
+<p align="center">
+  💬 <strong>Join the community:</strong> <a href="https://relens.ai/community">relens.ai/community</a>
+</p>
+
 ---
 
 ## Supported Agents
