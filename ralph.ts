@@ -27,7 +27,7 @@ type AgentType = (typeof AGENT_TYPES)[number];
 
 type AgentEnvOptions = { filterPlugins?: boolean; allowAllPermissions?: boolean };
 
-type AgentBuildArgsOptions = { allowAllPermissions?: boolean; extraFlags?: string[] };
+type AgentBuildArgsOptions = { allowAllPermissions?: boolean; extraFlags?: string[]; streamOutput?: boolean };
 
 interface AgentConfig {
   type: AgentType;
@@ -92,6 +92,9 @@ const AGENTS: Record<AgentType, AgentConfig> = {
     command: resolveCommand("claude", process.env.RALPH_CLAUDE_BINARY),
     buildArgs: (promptText, modelName, options) => {
       const cmdArgs = ["-p", promptText];
+      if (options?.streamOutput) {
+        cmdArgs.push("--output-format", "stream-json", "--include-partial-messages");
+      }
       if (modelName) {
         cmdArgs.push("--model", modelName);
       }
@@ -105,8 +108,14 @@ const AGENTS: Record<AgentType, AgentConfig> = {
     },
     buildEnv: () => ({ ...process.env }),
     parseToolOutput: line => {
-      const match = stripAnsi(line).match(/(?:Using|Called|Tool:)\s+([A-Za-z0-9_-]+)/i);
-      return match ? match[1] : null;
+      const cleanLine = stripAnsi(line);
+      const match = cleanLine.match(/(?:Using|Called|Tool:)\s+([A-Za-z0-9_.-]+)/i);
+      if (match) return match[1];
+      if (/"type"\s*:\s*"tool_use"/.test(cleanLine)) {
+        const nameMatch = cleanLine.match(/"name"\s*:\s*"([^"]+)"/);
+        if (nameMatch) return nameMatch[1];
+      }
+      return null;
     },
     configName: "Claude Code",
   },
@@ -1331,6 +1340,75 @@ function stripAnsi(input: string): string {
   return input.replace(/\x1B\[[0-9;]*m/g, "");
 }
 
+function extractClaudeStreamDisplayLines(rawLine: string): string[] {
+  const cleanLine = stripAnsi(rawLine).trim();
+  if (!cleanLine.startsWith("{")) {
+    return [rawLine];
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(cleanLine);
+  } catch {
+    return [rawLine];
+  }
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const lines: string[] = [];
+  const addText = (value: unknown) => {
+    if (typeof value !== "string") return;
+    for (const splitLine of value.split(/\r?\n/)) {
+      const trimmed = splitLine.trim();
+      if (trimmed) lines.push(trimmed);
+    }
+  };
+  const addContentText = (content: unknown) => {
+    if (typeof content === "string") {
+      addText(content);
+      return;
+    }
+    if (!Array.isArray(content)) return;
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      const blockRecord = block as Record<string, unknown>;
+      if (blockRecord.type === "tool_use") continue;
+      addText(blockRecord.text);
+      addText(blockRecord.thinking);
+      if (typeof blockRecord.content === "string") {
+        addText(blockRecord.content);
+      }
+    }
+  };
+
+  const payloadRecord = payload as Record<string, unknown>;
+  const payloadType = typeof payloadRecord.type === "string" ? payloadRecord.type : "";
+  if (payloadType === "assistant") {
+    if (payloadRecord.message && typeof payloadRecord.message === "object") {
+      const message = payloadRecord.message as Record<string, unknown>;
+      addContentText(message.content);
+    }
+    if (payloadRecord.delta && typeof payloadRecord.delta === "object") {
+      const delta = payloadRecord.delta as Record<string, unknown>;
+      addText(delta.text);
+      addText(delta.thinking);
+      addText(delta.content);
+    }
+  } else if (payloadType === "result") {
+    addText(payloadRecord.result);
+  } else if (payloadType === "error") {
+    if (payloadRecord.error && typeof payloadRecord.error === "object") {
+      const error = payloadRecord.error as Record<string, unknown>;
+      addText(error.message);
+    } else {
+      addText(payloadRecord.error);
+    }
+  }
+
+  return lines;
+}
+
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(totalSeconds / 3600);
@@ -1428,24 +1506,28 @@ async function streamProcessOutput(
   const handleLine = (line: string, isError: boolean) => {
     lastActivityAt = Date.now();
     const tool = parseToolOutput(line);
+    const outputLines = options.agent.type === "claude-code" ? extractClaudeStreamDisplayLines(line) : [line];
     if (tool) {
       toolCounts.set(tool, (toolCounts.get(tool) ?? 0) + 1);
-      if (compactTools) {
+      if (compactTools && outputLines.length === 0) {
         maybePrintToolSummary();
         return;
       }
     }
-    if (line.length === 0) {
-      console.log("");
+
+    for (const outputLine of outputLines) {
+      if (outputLine.length === 0) {
+        console.log("");
+        lastPrintedAt = Date.now();
+        continue;
+      }
+      if (isError) {
+        console.error(outputLine);
+      } else {
+        console.log(outputLine);
+      }
       lastPrintedAt = Date.now();
-      return;
     }
-    if (isError) {
-      console.error(line);
-    } else {
-      console.log(line);
-    }
-    lastPrintedAt = Date.now();
   };
 
   const streamText = async (
@@ -1801,7 +1883,11 @@ async function runRalphLoop(): Promise<void> {
 
     try {
       // Build command arguments (permission flags are handled inside buildArgs)
-      const cmdArgs = agentConfig.buildArgs(fullPrompt, currentModel, { allowAllPermissions, extraFlags: extraAgentFlags });
+      const cmdArgs = agentConfig.buildArgs(fullPrompt, currentModel, {
+        allowAllPermissions,
+        extraFlags: extraAgentFlags,
+        streamOutput,
+      });
 
       const env = agentConfig.buildEnv({
         filterPlugins: disablePlugins,
