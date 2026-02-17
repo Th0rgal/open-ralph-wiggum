@@ -93,7 +93,7 @@ const AGENTS: Record<AgentType, AgentConfig> = {
     buildArgs: (promptText, modelName, options) => {
       const cmdArgs = ["-p", promptText];
       if (options?.streamOutput) {
-        cmdArgs.push("--output-format", "stream-json", "--include-partial-messages");
+        cmdArgs.push("--output-format", "stream-json", "--include-partial-messages", "--verbose");
       }
       if (modelName) {
         cmdArgs.push("--model", modelName);
