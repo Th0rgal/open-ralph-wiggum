@@ -9,6 +9,7 @@
 import { $ } from "bun";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "fs";
 import { join } from "path";
+import { checkTerminalPromise, tasksMarkdownAllComplete } from "./completion";
 
 const VERSION = "1.2.1";
 
@@ -700,7 +701,7 @@ function findNextTask(tasks: Task[]): Task | null {
 
 // Check if all tasks are complete
 function allTasksComplete(tasks: Task[]): boolean {
-  return tasks.length > 0 && tasks.every(t => t.status === "complete");
+  return tasks.length > 0 && tasks.every(t => t.status === "complete" && t.subtasks.every(st => st.status === "complete"));
 }
 
 // Parse options
@@ -1264,60 +1265,10 @@ Unable to read .ralph/ralph-tasks.md
 }
 
 /**
- * Check if output contains a valid completion promise.
- *
- * To avoid false positives (Issue #28), we check that the promise:
- * 1. Uses the exact <promise>...</promise> format
- * 2. Is NOT preceded by negation words like "not", "don't", "won't", "will not"
- * 3. Is NOT inside quotes (the model explaining what it will say)
- *
- * Valid: "<promise>COMPLETE</promise>"
- * Invalid: "I will not output <promise>COMPLETE</promise> yet"
- * Invalid: 'Once done, I\'ll say "<promise>COMPLETE</promise>"'
+ * Check if output contains a completion promise as the final non-empty line.
  */
 function checkCompletion(output: string, promise: string): boolean {
-  const escapedPromise = escapeRegex(promise);
-  const promisePattern = new RegExp(`<promise>\\s*${escapedPromise}\\s*</promise>`, "gi");
-
-  const matches = output.match(promisePattern);
-  if (!matches) return false;
-
-  // Check each match for false positive indicators
-  for (const match of matches) {
-    const matchIndex = output.indexOf(match);
-    const contextBefore = output.substring(Math.max(0, matchIndex - 100), matchIndex).toLowerCase();
-
-    // Check for negation patterns before the promise
-    const negationPatterns = [
-      /\bnot\s+(yet\s+)?(say|output|write|respond|print)/,
-      /\bdon'?t\s+(say|output|write|respond|print)/,
-      /\bwon'?t\s+(say|output|write|respond|print)/,
-      /\bwill\s+not\s+(say|output|write|respond|print)/,
-      /\bshould\s+not\s+(say|output|write|respond|print)/,
-      /\bwouldn'?t\s+(say|output|write|respond|print)/,
-      /\bavoid\s+(saying|outputting|writing)/,
-      /\bwithout\s+(saying|outputting|writing)/,
-      /\bbefore\s+(saying|outputting|I\s+say)/,
-      /\buntil\s+(I\s+)?(say|output|can\s+say)/,
-    ];
-
-    const hasNegation = negationPatterns.some(pattern => pattern.test(contextBefore));
-    if (hasNegation) continue;
-
-    // Check if inside quotes (model explaining what it will say)
-    const quotesBefore = (contextBefore.match(/["'`]/g) || []).length;
-    // Odd number of quotes means we're inside a quoted string
-    if (quotesBefore % 2 === 1) continue;
-
-    // This match appears to be a genuine completion signal
-    return true;
-  }
-
-  return false;
-}
-
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return checkTerminalPromise(output, promise);
 }
 
 function detectPlaceholderPluginError(output: string): boolean {
@@ -1710,6 +1661,12 @@ async function runRalphLoop(): Promise<void> {
     console.log(`🔄 Resuming Ralph loop from ${statePath}`);
   }
 
+  if (tasksMode && completionPromise.trim() === taskPromise.trim()) {
+    console.error("Error: completion and task promises must be different in tasks mode.");
+    console.error(`Received: --completion-promise "${completionPromise}" and --task-promise "${taskPromise}"`);
+    process.exit(1);
+  }
+
   const runtimeRotation = rotation ?? null;
   const rotationActive = !!(runtimeRotation && runtimeRotation.length > 0);
   const rotationIndex = rotationActive
@@ -1937,9 +1894,27 @@ async function runRalphLoop(): Promise<void> {
       }
 
       const combinedOutput = `${result}\n${stderr}`;
-      const completionDetected = checkCompletion(combinedOutput, completionPromise);
-      const abortDetected = abortPromise ? checkCompletion(combinedOutput, abortPromise) : false;
-      const taskCompletionDetected = tasksMode ? checkCompletion(combinedOutput, taskPromise) : false;
+      const completionSignalDetected = checkCompletion(result, completionPromise);
+      const abortDetected = abortPromise ? checkCompletion(result, abortPromise) : false;
+      const taskCompletionDetected = tasksMode ? checkCompletion(result, taskPromise) : false;
+
+      let completionDetected = completionSignalDetected;
+      if (tasksMode && completionSignalDetected) {
+        let tasksGatePassed = false;
+        try {
+          if (existsSync(tasksPath)) {
+            const tasksContent = readFileSync(tasksPath, "utf-8");
+            tasksGatePassed = tasksMarkdownAllComplete(tasksContent);
+          }
+        } catch {
+          tasksGatePassed = false;
+        }
+
+        if (!tasksGatePassed) {
+          completionDetected = false;
+          console.warn(`\n⚠️  Completion promise ignored: tasks file still has incomplete items.`);
+        }
+      }
 
       const iterationDuration = Date.now() - iterationStart;
 

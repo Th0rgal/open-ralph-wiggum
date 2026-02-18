@@ -15,6 +15,7 @@
   "files": [
     "bin/ralph.js",
     "ralph.ts",
+    "completion.ts",
     "README.md",
     "LICENSE",
     "install.sh",
