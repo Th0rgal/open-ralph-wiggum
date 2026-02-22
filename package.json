@@ -1,6 +1,6 @@
 {
   "name": "@th0rgal/ralph-wiggum",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Ralph Wiggum technique for iterative AI development loops with multi-agent support",
   "main": "bin/ralph.js",
   "bin": {

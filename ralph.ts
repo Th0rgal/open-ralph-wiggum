@@ -9,9 +9,9 @@
 import { $ } from "bun";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "fs";
 import { join } from "path";
-import { checkTerminalPromise, tasksMarkdownAllComplete } from "./completion";
+import { checkTerminalPromise, stripAnsi, tasksMarkdownAllComplete } from "./completion";
 
-const VERSION = "1.2.1";
+const VERSION = "1.2.2";
 
 // Detect Windows platform for command resolution
 const IS_WINDOWS = process.platform === "win32";
@@ -45,7 +45,7 @@ interface AgentConfig {
 }
 
 interface JsonAgentConfig {
-  type: string;
+  type: AgentType;
   command: string;
   configName: string;
   argsTemplate?: string;
@@ -75,19 +75,21 @@ const PARSE_PATTERNS: Record<string, (line: string) => string | null> = {
     }
     return null;
   },
-  "codex": (line) => {
-    const match = stripAnsi(line).match(/(?:Tool:|Using|Calling|Running)\s+([A-Za-z0-9_-]+)/i);
-    return match ? match[1] : null;
-  },
-  "copilot": (line) => {
-    const match = stripAnsi(line).match(/(?:Tool:|Using|Called|Running)\s+([A-Za-z0-9_-]+)/i);
-    return match ? match[1] : null;
-  },
+  "codex": null,
+  "copilot": null,
   "default": (line) => {
     const match = stripAnsi(line).match(/(?:Tool:|Using|Called|Running)\s+([A-Za-z0-9_-]+)/i);
     return match ? match[1] : null;
   },
 };
+
+const defaultParseToolOutput = (line: string): string | null => {
+  const match = stripAnsi(line).match(/(?:Tool:|Using|Calling|Running)\s+([A-Za-z0-9_-]+)/i);
+  return match ? match[1] : null;
+};
+
+PARSE_PATTERNS["codex"] = defaultParseToolOutput;
+PARSE_PATTERNS["copilot"] = defaultParseToolOutput;
 
 const ARGS_TEMPLATES: Record<string, (prompt: string, model: string, options?: AgentBuildArgsOptions) => string[]> = {
   "opencode": (prompt, model, options) => {
@@ -152,6 +154,10 @@ function loadAgentConfig(configPath?: string): Record<string, JsonAgentConfig> |
     const config: RalphConfig = JSON.parse(content);
     const agents: Record<string, JsonAgentConfig> = {};
     for (const agent of config.agents) {
+      if (!AGENT_TYPES.includes(agent.type)) {
+        console.warn(`Warning: Ignoring unknown agent type: ${agent.type}`);
+        continue;
+      }
       agents[agent.type] = agent;
     }
     return agents;
@@ -166,7 +172,7 @@ function createAgentConfig(json: JsonAgentConfig): AgentConfig {
   const envTemplate = json.envTemplate || "default";
 
   return {
-    type: json.type as AgentType,
+    type: json.type,
     command: resolveCommand(json.command, process.env[`RALPH_${json.type.toUpperCase()}_BINARY`]),
     buildArgs: ARGS_TEMPLATES[argsTemplate] || ARGS_TEMPLATES["default"],
     buildEnv: ENV_TEMPLATES[envTemplate] || ENV_TEMPLATES["default"],
@@ -1477,10 +1483,6 @@ function detectModelNotFoundError(output: string): boolean {
          output.includes("Provider returned error") ||
          output.includes("model not found") ||
          output.includes("No model configured");
-}
-
-function stripAnsi(input: string): string {
-  return input.replace(/\x1B\[[0-9;]*m/g, "");
 }
 
 function extractClaudeStreamDisplayLines(rawLine: string): string[] {
