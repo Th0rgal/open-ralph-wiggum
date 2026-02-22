@@ -80,3 +80,4 @@ node_modules/
 # Build artifacts
 bin/*
 !bin/ralph.js
+/.ralph
