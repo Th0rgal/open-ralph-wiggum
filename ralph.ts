@@ -142,6 +142,10 @@ function loadAgentConfig(configPath?: string): Record<string, JsonAgentConfig> |
     const config: RalphConfig = JSON.parse(content);
     const agents: Record<string, JsonAgentConfig> = {};
     for (const agent of config.agents) {
+      if (!AGENT_TYPES.includes(agent.type)) {
+        console.warn(`Warning: Ignoring unknown agent type: ${agent.type}`);
+        continue;
+      }
       agents[agent.type] = agent;
     }
     return agents;
