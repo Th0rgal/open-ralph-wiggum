@@ -45,7 +45,7 @@ interface AgentConfig {
 }
 
 interface JsonAgentConfig {
-  type: string;
+  type: AgentType;
   command: string;
   configName: string;
   argsTemplate?: string;
@@ -156,7 +156,7 @@ function createAgentConfig(json: JsonAgentConfig): AgentConfig {
   const envTemplate = json.envTemplate || "default";
 
   return {
-    type: json.type as AgentType,
+    type: json.type,
     command: resolveCommand(json.command, process.env[`RALPH_${json.type.toUpperCase()}_BINARY`]),
     buildArgs: ARGS_TEMPLATES[argsTemplate] || ARGS_TEMPLATES["default"],
     buildEnv: ENV_TEMPLATES[envTemplate] || ENV_TEMPLATES["default"],
