@@ -22,6 +22,7 @@ const statePath = join(stateDir, "ralph-loop.state.json");
 const contextPath = join(stateDir, "ralph-context.md");
 const historyPath = join(stateDir, "ralph-history.json");
 const tasksPath = join(stateDir, "ralph-tasks.md");
+const questionsPath = join(stateDir, "ralph-questions.json");
 
 const AGENT_TYPES = ["opencode", "claude-code", "codex", "copilot"] as const;
 type AgentType = (typeof AGENT_TYPES)[number];
@@ -201,6 +202,8 @@ Options:
   --prompt-template PATH  Use custom prompt template (supports variables)
   --no-stream         Buffer agent output and print at the end
   --verbose-tools     Print every tool line (disable compact tool summary)
+  --questions         Enable interactive question handling (default: enabled)
+  --no-questions      Disable interactive question handling (agent will loop on questions)
   --no-plugins        Disable non-auth OpenCode plugins for this run (opencode only)
   --no-commit         Don't auto-commit after each iteration
   --allow-all         Auto-approve all tool permissions (default: on)
@@ -724,6 +727,7 @@ let promptTemplatePath = ""; // Custom prompt template file
 let streamOutput = true;
 let verboseTools = false;
 let promptSource = "";
+let handleQuestions = true;
 
 const promptParts: string[] = [];
 let extraAgentFlags: string[] = [];
@@ -851,6 +855,10 @@ for (let i = 0; i < args.length; i++) {
     allowAllPermissions = true;
   } else if (arg === "--no-allow-all") {
     allowAllPermissions = false;
+  } else if (arg === "--questions") {
+    handleQuestions = true;
+  } else if (arg === "--no-questions") {
+    handleQuestions = false;
   } else if (arg.startsWith("-")) {
     console.error(`Error: Unknown option: ${arg}`);
     console.error("Run 'ralph --help' for available options");
@@ -1061,6 +1069,77 @@ function clearContext(): void {
       require("fs").unlinkSync(contextPath);
     } catch {}
   }
+}
+
+interface PendingQuestion {
+  question: string;
+  timestamp: string;
+}
+
+function savePendingQuestion(question: string): void {
+  if (!existsSync(stateDir)) {
+    mkdirSync(stateDir, { recursive: true });
+  }
+  const questions: PendingQuestion[] = loadPendingQuestions();
+  questions.push({ question, timestamp: new Date().toISOString() });
+  writeFileSync(questionsPath, JSON.stringify(questions, null, 2));
+}
+
+function loadPendingQuestions(): PendingQuestion[] {
+  if (!existsSync(questionsPath)) {
+    return [];
+  }
+  try {
+    return JSON.parse(readFileSync(questionsPath, "utf-8"));
+  } catch {
+    return [];
+  }
+}
+
+function clearPendingQuestions(): void {
+  if (existsSync(questionsPath)) {
+    try {
+      require("fs").unlinkSync(questionsPath);
+    } catch {}
+  }
+}
+
+function getAndClearPendingQuestion(): string | null {
+  const questions = loadPendingQuestions();
+  if (questions.length === 0) {
+    return null;
+  }
+  const question = questions[0].question;
+  clearPendingQuestions();
+  return question;
+}
+
+function detectQuestionTool(output: string, agent: AgentConfig): string | null {
+  const lines = output.split("\n");
+  for (const line of lines) {
+    const tool = agent.parseToolOutput(line);
+    if (tool && tool.toLowerCase() === "question") {
+      const questionMatch = line.match(/(?:question|asking|please confirm|do you want|should i|can i)\s*[:\-]?\s*(.+)/i);
+      if (questionMatch) {
+        return questionMatch[1].substring(0, 200);
+      }
+      return "question detected";
+    }
+  }
+  return null;
+}
+
+async function promptUser(question: string): Promise<string> {
+  return new Promise(resolve => {
+    const rl = require("readline").createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    rl.question(`\n🤔 Question: ${question}\nYour answer: `, (answer: string) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
 }
 
 /**
@@ -1792,6 +1871,7 @@ async function runRalphLoop(): Promise<void> {
     }
 
     clearState();
+    clearPendingQuestions();
     console.log("Loop cancelled.");
     process.exit(0);
   });
@@ -2031,7 +2111,37 @@ async function runRalphLoop(): Promise<void> {
         clearState();
         clearHistory();
         clearContext();
+        clearPendingQuestions();
         process.exit(1); // Exit with error code to indicate abort
+      }
+
+      // Check for question tool invocation and prompt user if needed
+      if (handleQuestions) {
+        const detectedQuestion = detectQuestionTool(combinedOutput, agentConfig);
+        if (detectedQuestion) {
+          console.log(`\n🤔 Agent asked a question. Pausing to get your answer...`);
+          const answer = await promptUser(detectedQuestion);
+          if (answer.trim()) {
+            savePendingQuestion(answer);
+            console.log(`✅ Answer saved for next iteration`);
+          } else {
+            console.log(`ℹ️  No answer provided, continuing without user input`);
+          }
+        } else {
+          const pendingAnswer = getAndClearPendingQuestion();
+          if (pendingAnswer) {
+            if (!existsSync(stateDir)) {
+              mkdirSync(stateDir, { recursive: true });
+            }
+            const existingContext = loadContext() || "";
+            const answerContext = `\n## Previous Answer\nYour previous answer was: ${pendingAnswer}\n`;
+            if (existingContext) {
+              writeFileSync(contextPath, existingContext + answerContext);
+            } else {
+              writeFileSync(contextPath, `# Ralph Loop Context\n${answerContext}`);
+            }
+          }
+        }
       }
 
       // Check for task completion (tasks mode only)
@@ -2055,6 +2165,7 @@ async function runRalphLoop(): Promise<void> {
           clearState();
           clearHistory();
           clearContext();
+          clearPendingQuestions();
           break;
         }
       }
