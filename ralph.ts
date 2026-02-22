@@ -24,6 +24,10 @@ const historyPath = join(stateDir, "ralph-history.json");
 const tasksPath = join(stateDir, "ralph-tasks.md");
 const questionsPath = join(stateDir, "ralph-questions.json");
 
+// Agent configuration from file or built-in
+let customConfigPath = "";
+let initConfigPath = "";
+
 const AGENT_TYPES = ["opencode", "claude-code", "codex", "copilot"] as const;
 type AgentType = (typeof AGENT_TYPES)[number];
 
@@ -38,6 +42,165 @@ interface AgentConfig {
   buildEnv: (options: AgentEnvOptions) => Record<string, string>;
   parseToolOutput: (line: string) => string | null;
   configName: string;
+}
+
+interface JsonAgentConfig {
+  type: string;
+  command: string;
+  configName: string;
+  argsTemplate?: string;
+  envTemplate?: string;
+  parsePattern?: string;
+}
+
+interface RalphConfig {
+  version: string;
+  agents: JsonAgentConfig[];
+}
+
+const DEFAULT_CONFIG_PATH = join(process.env.HOME || "", ".config", "open-ralph-wiggum", "agents.json");
+
+const PARSE_PATTERNS: Record<string, (line: string) => string | null> = {
+  "opencode": (line) => {
+    const match = stripAnsi(line).match(/^\|\s{2}([A-Za-z0-9_-]+)/);
+    return match ? match[1] : null;
+  },
+  "claude-code": (line) => {
+    const cleanLine = stripAnsi(line);
+    const match = cleanLine.match(/(?:Using|Called|Tool:)\s+([A-Za-z0-9_.-]+)/i);
+    if (match) return match[1];
+    if (/"type"\s*:\s*"tool_use"/.test(cleanLine)) {
+      const nameMatch = cleanLine.match(/"name"\s*:\s*"([^"]+)"/);
+      if (nameMatch) return nameMatch[1];
+    }
+    return null;
+  },
+  "codex": (line) => {
+    const match = stripAnsi(line).match(/(?:Tool:|Using|Calling|Running)\s+([A-Za-z0-9_-]+)/i);
+    return match ? match[1] : null;
+  },
+  "copilot": (line) => {
+    const match = stripAnsi(line).match(/(?:Tool:|Using|Called|Running)\s+([A-Za-z0-9_-]+)/i);
+    return match ? match[1] : null;
+  },
+};
+
+const ARGS_TEMPLATES: Record<string, (prompt: string, model: string, options?: AgentBuildArgsOptions) => string[]> = {
+  "opencode": (prompt, model, options) => {
+    const cmdArgs = ["run"];
+    if (model) cmdArgs.push("-m", model);
+    if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
+    cmdArgs.push(prompt);
+    return cmdArgs;
+  },
+  "claude-code": (prompt, model, options) => {
+    const cmdArgs = ["-p", prompt];
+    if (options?.streamOutput) cmdArgs.push("--output-format", "stream-json", "--include-partial-messages", "--verbose");
+    if (model) cmdArgs.push("--model", model);
+    if (options?.allowAllPermissions) cmdArgs.push("--dangerously-skip-permissions");
+    if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
+    return cmdArgs;
+  },
+  "codex": (prompt, model, options) => {
+    const cmdArgs = ["exec"];
+    if (model) cmdArgs.push("--model", model);
+    if (options?.allowAllPermissions) cmdArgs.push("--full-auto");
+    if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
+    cmdArgs.push(prompt);
+    return cmdArgs;
+  },
+  "copilot": (prompt, model, options) => {
+    const cmdArgs = ["-p", prompt];
+    if (model) cmdArgs.push("--model", model);
+    if (options?.allowAllPermissions) cmdArgs.push("--allow-all", "--no-ask-user");
+    if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
+    return cmdArgs;
+  },
+};
+
+const ENV_TEMPLATES: Record<string, (options: AgentEnvOptions) => Record<string, string>> = {
+  "opencode": (options) => {
+    const env = { ...process.env };
+    if (options.filterPlugins || options.allowAllPermissions) {
+      env.OPENCODE_CONFIG = ensureRalphConfig({
+        filterPlugins: options.filterPlugins,
+        allowAllPermissions: options.allowAllPermissions,
+      });
+    }
+    return env;
+  },
+  "default": () => ({ ...process.env }),
+};
+
+function loadAgentConfig(configPath?: string): Record<string, JsonAgentConfig> | null {
+  const path = configPath || DEFAULT_CONFIG_PATH;
+  if (!existsSync(path)) return null;
+  try {
+    const content = readFileSync(path, "utf-8");
+    const config: RalphConfig = JSON.parse(content);
+    const agents: Record<string, JsonAgentConfig> = {};
+    for (const agent of config.agents) {
+      agents[agent.type] = agent;
+    }
+    return agents;
+  } catch {
+    return null;
+  }
+}
+
+function createAgentConfig(json: JsonAgentConfig): AgentConfig {
+  const parsePattern = json.parsePattern || "default";
+  const argsTemplate = json.argsTemplate || "default";
+  const envTemplate = json.envTemplate || "default";
+
+  return {
+    type: json.type as AgentType,
+    command: resolveCommand(json.command, process.env[`RALPH_${json.type.toUpperCase()}_BINARY`]),
+    buildArgs: ARGS_TEMPLATES[argsTemplate] || ARGS_TEMPLATES["default"],
+    buildEnv: ENV_TEMPLATES[envTemplate] || ENV_TEMPLATES["default"],
+    parseToolOutput: PARSE_PATTERNS[parsePattern] || PARSE_PATTERNS["codex"],
+    configName: json.configName,
+  };
+}
+
+function getDefaultConfig(): RalphConfig {
+  return {
+    version: "1.0",
+    agents: [
+      {
+        type: "opencode",
+        command: "opencode",
+        configName: "OpenCode",
+        argsTemplate: "opencode",
+        envTemplate: "opencode",
+        parsePattern: "opencode",
+      },
+      {
+        type: "claude-code",
+        command: "claude",
+        configName: "Claude Code",
+        argsTemplate: "claude-code",
+        envTemplate: "default",
+        parsePattern: "claude-code",
+      },
+      {
+        type: "codex",
+        command: "codex",
+        configName: "Codex",
+        argsTemplate: "codex",
+        envTemplate: "default",
+        parsePattern: "codex",
+      },
+      {
+        type: "copilot",
+        command: "copilot",
+        configName: "Copilot CLI",
+        argsTemplate: "copilot",
+        envTemplate: "default",
+        parsePattern: "copilot",
+      },
+    ],
+  };
 }
 
 /**
@@ -58,7 +221,10 @@ function resolveCommand(cmd: string, envOverride?: string): string {
   return cmd;
 }
 
-const AGENTS: Record<AgentType, AgentConfig> = {
+// Load agents from config file if available
+const customAgents = loadAgentConfig(customConfigPath);
+
+const BUILT_IN_AGENTS: Record<AgentType, AgentConfig> = {
   opencode: {
     type: "opencode",
     command: resolveCommand("opencode", process.env.RALPH_OPENCODE_BINARY),
@@ -170,6 +336,15 @@ const AGENTS: Record<AgentType, AgentConfig> = {
     configName: "Copilot CLI",
   },
 };
+
+// Merge custom agents with built-in (custom overrides built-in)
+const AGENTS: Record<string, AgentConfig> = { ...BUILT_IN_AGENTS };
+if (customAgents) {
+  for (const [type, json] of Object.entries(customAgents)) {
+    AGENTS[type] = createAgentConfig(json);
+  }
+}
+
 // Parse arguments
 const args = process.argv.slice(2);
 
@@ -208,6 +383,8 @@ Options:
   --no-commit         Don't auto-commit after each iteration
   --allow-all         Auto-approve all tool permissions (default: on)
   --no-allow-all      Require interactive permission prompts
+  --config PATH       Use custom agent config file (default: ~/.config/open-ralph-wiggum/agents.json)
+  --init-config [PATH]  Write default agent config to PATH (default: ~/.config/open-ralph-wiggum/agents.json)
   --version, -v       Show version
   --help, -h          Show this help
   --                  Pass all remaining arguments to the agent (e.g., -- --extra-tags)
@@ -248,6 +425,32 @@ Learn more: https://ghuntley.com/ralph/
 
 if (args.includes("--version") || args.includes("-v")) {
   console.log(`ralph ${VERSION}`);
+  process.exit(0);
+}
+
+// Handle --config flag (set before other args processing)
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === "--config") {
+    const val = args[++i];
+    if (!val) {
+      console.error("Error: --config requires a path");
+      process.exit(1);
+    }
+    customConfigPath = val;
+  } else if (args[i] === "--init-config") {
+    initConfigPath = args[++i] || DEFAULT_CONFIG_PATH;
+  }
+}
+
+// Handle --init-config: write default config and exit
+if (initConfigPath) {
+  const configDir = join(initConfigPath, "..");
+  if (!existsSync(configDir)) {
+    mkdirSync(configDir, { recursive: true });
+  }
+  writeFileSync(initConfigPath, JSON.stringify(getDefaultConfig(), null, 2));
+  console.log(`Created default agent config at: ${initConfigPath}`);
+  console.log(`You can edit this file to add custom agents or override defaults.`);
   process.exit(0);
 }
 
@@ -755,9 +958,9 @@ function parseRotationInput(raw: string): string[] {
       console.error(`Error: Invalid rotation entry '${entry}'. Both agent and model are required.`);
       process.exit(1);
     }
-    if (!AGENT_TYPES.includes(agent as AgentType)) {
+    if (!AGENTS[agent]) {
       console.error(
-        `Error: Invalid agent '${agent}' in rotation entry '${entry}'. Valid agents: ${AGENT_TYPES.join(", ")}`,
+        `Error: Invalid agent '${agent}' in rotation entry '${entry}'. Valid agents: ${Object.keys(AGENTS).join(", ")}`,
       );
       process.exit(1);
     }
@@ -771,8 +974,8 @@ for (let i = 0; i < args.length; i++) {
 
   if (arg === "--agent") {
     const val = args[++i];
-    if (!val || !AGENT_TYPES.includes(val as AgentType)) {
-      console.error("Error: --agent requires: 'opencode', 'claude-code', 'codex', or 'copilot'");
+    if (!val || !AGENTS[val]) {
+      console.error(`Error: --agent requires one of: ${Object.keys(AGENTS).join(", ")}`);
       process.exit(1);
     }
     agentType = val as AgentType;
@@ -870,8 +1073,8 @@ for (let i = 0; i < args.length; i++) {
 
 if (rotationInput) {
   rotation = parseRotationInput(rotationInput);
-} else if (!AGENT_TYPES.includes(agentType)) {
-  console.error("Error: --agent requires: 'opencode', 'claude-code', or 'codex'");
+} else if (!AGENTS[agentType]) {
+  console.error(`Error: --agent requires one of: ${Object.keys(AGENTS).join(", ")}`);
   process.exit(1);
 }
 
