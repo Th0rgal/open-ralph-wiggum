@@ -1110,7 +1110,13 @@ function getAndClearPendingQuestion(): string | null {
     return null;
   }
   const question = questions[0].question;
-  clearPendingQuestions();
+  // Remove only the first question and save the rest
+  const remaining = questions.slice(1);
+  if (remaining.length > 0) {
+    writeFileSync(questionsPath, JSON.stringify(remaining, null, 2));
+  } else {
+    clearPendingQuestions();
+  }
   return question;
 }
 
@@ -1885,6 +1891,7 @@ async function runRalphLoop(): Promise<void> {
       console.log(`║  Total time: ${formatDurationLong(history.totalDurationMs)}`);
       console.log(`╚══════════════════════════════════════════════════════════════════╝`);
       clearState();
+      clearPendingQuestions();
       // Keep history for analysis via --status
       break;
     }
@@ -2123,7 +2130,18 @@ async function runRalphLoop(): Promise<void> {
           const answer = await promptUser(detectedQuestion);
           if (answer.trim()) {
             savePendingQuestion(answer);
-            console.log(`✅ Answer saved for next iteration`);
+            // Immediately inject answer into context for this iteration
+            if (!existsSync(stateDir)) {
+              mkdirSync(stateDir, { recursive: true });
+            }
+            const existingContext = loadContext() || "";
+            const answerContext = `\n## Previous Answer\nYour previous answer was: ${answer}\n`;
+            if (existingContext) {
+              writeFileSync(contextPath, existingContext + answerContext);
+            } else {
+              writeFileSync(contextPath, `# Ralph Loop Context\n${answerContext}`);
+            }
+            console.log(`✅ Answer saved and injected into context`);
           } else {
             console.log(`ℹ️  No answer provided, continuing without user input`);
           }
