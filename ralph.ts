@@ -1146,6 +1146,7 @@ function ensureRalphConfig(options: { filterPlugins?: boolean; allowAllPermissio
       todoread: "allow",
       question: "allow",
       lsp: "allow",
+      external_directory: "allow",
     };
   }
 
@@ -1621,6 +1622,8 @@ async function streamProcessOutput(
     heartbeatIntervalMs: number;
     iterationStart: number;
     agent: AgentConfig;
+    onHeartbeatTimer?: (timer: ReturnType<typeof setInterval>) => void;
+    abortSignal?: AbortSignal;
   },
 ): Promise<{ stdoutText: string; stderrText: string; toolCounts: Map<string, number> }> {
   const toolCounts = new Map<string, number>();
@@ -1632,6 +1635,7 @@ async function streamProcessOutput(
 
   const compactTools = options.compactTools;
   const parseToolOutput = options.agent.parseToolOutput;
+  const abortSignal = options.abortSignal;
 
   const maybePrintToolSummary = (force = false) => {
     if (!compactTools || toolCounts.size === 0) return;
@@ -1683,27 +1687,44 @@ async function streamProcessOutput(
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      const text = decoder.decode(value, { stream: true });
-      if (text.length > 0) {
-        onText(text);
-        buffer += text;
-        const lines = buffer.split(/\r?\n/);
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          handleLine(line, isError);
+    try {
+      while (true) {
+        if (abortSignal?.aborted) break;
+        
+        // Race between reading and abort
+        const readPromise = reader.read();
+        const abortPromise = abortSignal 
+          ? new Promise<{ value: undefined; done: true }>((resolve) => {
+              abortSignal.addEventListener('abort', () => resolve({ value: undefined, done: true }));
+            })
+          : new Promise<{ value: undefined; done: true }>(() => {});
+        
+        const { value, done } = await Promise.race([readPromise, abortPromise]);
+        if (done || abortSignal?.aborted) break;
+        
+        const text = decoder.decode(value, { stream: true });
+        if (text.length > 0) {
+          onText(text);
+          buffer += text;
+          const lines = buffer.split(/\r?\n/);
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            handleLine(line, isError);
+          }
         }
       }
+    } finally {
+      reader.releaseLock();
     }
-    const flushed = decoder.decode();
-    if (flushed.length > 0) {
-      onText(flushed);
-      buffer += flushed;
-    }
-    if (buffer.length > 0) {
-      handleLine(buffer, isError);
+    if (!abortSignal?.aborted) {
+      const flushed = decoder.decode();
+      if (flushed.length > 0) {
+        onText(flushed);
+        buffer += flushed;
+      }
+      if (buffer.length > 0) {
+        handleLine(buffer, isError);
+      }
     }
   };
 
@@ -1712,10 +1733,14 @@ async function streamProcessOutput(
     if (now - lastPrintedAt >= options.heartbeatIntervalMs) {
       const elapsed = formatDuration(now - options.iterationStart);
       const sinceActivity = formatDuration(now - lastActivityAt);
-      console.log(`⏳ working... elapsed ${elapsed} · last activity ${sinceActivity} ago`);
+      console.log(`[heartbeat] ⏳ working... elapsed ${elapsed} · last activity ${sinceActivity} ago`);
       lastPrintedAt = now;
     }
   }, options.heartbeatIntervalMs);
+
+  if (options.onHeartbeatTimer) {
+    options.onHeartbeatTimer(heartbeatTimer);
+  }
 
   try {
     await Promise.all([
@@ -1738,7 +1763,7 @@ async function streamProcessOutput(
     clearInterval(heartbeatTimer);
   }
 
-  if (compactTools) {
+  if (compactTools && !abortSignal?.aborted) {
     maybePrintToolSummary(true);
   }
 
@@ -1754,11 +1779,10 @@ interface FileSnapshot {
 
 async function captureFileSnapshot(): Promise<FileSnapshot> {
   const files = new Map<string, string>();
-  const cwd = process.cwd();
   try {
     // Get list of all tracked and modified files
-    const status = await $`git status --porcelain`.cwd(cwd).text();
-    const trackedFiles = await $`git ls-files`.cwd(cwd).text();
+    const status = await $`git status --porcelain`.text();
+    const trackedFiles = await $`git ls-files`.text();
 
     // Combine modified and tracked files
     const allFiles = new Set<string>();
@@ -1776,7 +1800,7 @@ async function captureFileSnapshot(): Promise<FileSnapshot> {
     // Get hash for each file (using git hash-object for content comparison)
     for (const file of allFiles) {
       try {
-        const hash = await $`git hash-object ${file} 2>/dev/null || stat -f '%m' ${file} 2>/dev/null || echo ''`.cwd(cwd).text();
+        const hash = await $`git hash-object ${file} 2>/dev/null || stat -f '%m' ${file} 2>/dev/null || echo ''`.text();
         files.set(file, hash.trim());
       } catch {
         // File may not exist, skip
@@ -1966,15 +1990,35 @@ async function runRalphLoop(): Promise<void> {
   // Track current subprocess for cleanup on SIGINT
   let currentProc: ReturnType<typeof Bun.spawn> | null = null;
 
+  // Track current heartbeat timer for cleanup on SIGINT
+  let currentHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Track current AbortController for cancelling stream reading
+  let currentAbortController: AbortController | null = null;
+
   // Set up signal handler for graceful shutdown
   let stopping = false;
   process.on("SIGINT", () => {
     if (stopping) {
       console.log("\nForce stopping...");
+      // Force immediate exit on second SIGINT
       process.exit(1);
+      return;
     }
     stopping = true;
     console.log("\nGracefully stopping Ralph loop...");
+
+    // Abort any pending stream operations
+    if (currentAbortController) {
+      currentAbortController.abort();
+      currentAbortController = null;
+    }
+
+    // Clear the heartbeat timer immediately to stop status messages
+    if (currentHeartbeatTimer) {
+      clearInterval(currentHeartbeatTimer);
+      currentHeartbeatTimer = null;
+    }
 
     // Kill the subprocess if it's running
     if (currentProc) {
@@ -1988,11 +2032,20 @@ async function runRalphLoop(): Promise<void> {
     clearState();
     clearPendingQuestions();
     console.log("Loop cancelled.");
-    process.exit(0);
+    
+    // Use setImmediate to allow the abort event to propagate
+    // then force exit. This is more reliable than process.exit()
+    // directly in the signal handler with pending async operations.
+    setImmediate(() => process.exit(0));
   });
 
   // Main loop
   while (true) {
+    // Check if stopping due to SIGINT
+    if (stopping) {
+      break;
+    }
+
     // Check max iterations
     if (maxIterations > 0 && state.iteration > maxIterations) {
       console.log(`\n╔══════════════════════════════════════════════════════════════════╗`);
@@ -2050,7 +2103,6 @@ async function runRalphLoop(): Promise<void> {
       // Run agent using spawn for better argument handling
       // stdin is inherited so users can respond to permission prompts if needed
       currentProc = Bun.spawn([agentConfig.command, ...cmdArgs], {
-        cwd: process.cwd(),
         env,
         stdin: "inherit",
         stdout: "pipe",
@@ -2062,14 +2114,24 @@ async function runRalphLoop(): Promise<void> {
       let stderr = "";
       let toolCounts = new Map<string, number>();
 
+      // Create AbortController for this iteration's stream reading
+      const abortController = new AbortController();
+      currentAbortController = abortController;
+
       if (streamOutput) {
         const streamed = await streamProcessOutput(proc, {
           compactTools: !verboseTools,
           toolSummaryIntervalMs: 3000,
-          heartbeatIntervalMs: 10000,
+          heartbeatIntervalMs: process.env.NODE_ENV === 'test' ? 1000 : 10000,
           iterationStart,
           agent: agentConfig,
+          abortSignal: abortController.signal,
+          onHeartbeatTimer: (timer) => {
+            currentHeartbeatTimer = timer;
+          },
         });
+        currentHeartbeatTimer = null; // Clear after streaming completes
+        currentAbortController = null; // Clear after streaming completes
         result = streamed.stdoutText;
         stderr = streamed.stderrText;
         toolCounts = streamed.toolCounts;
@@ -2078,6 +2140,7 @@ async function runRalphLoop(): Promise<void> {
         const stderrPromise = new Response(proc.stderr).text();
         [result, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
         toolCounts = collectToolSummaryFromText(`${result}\n${stderr}`, agentConfig);
+        currentAbortController = null; // Clear after non-streaming completes
       }
 
       const exitCode = await exitCodePromise;
@@ -2308,11 +2371,10 @@ async function runRalphLoop(): Promise<void> {
       if (autoCommit) {
         try {
           // Check if there are changes to commit
-          const cwd = process.cwd();
-          const status = await $`git status --porcelain`.cwd(cwd).text();
+          const status = await $`git status --porcelain`.text();
           if (status.trim()) {
-            await $`git add -A`.cwd(cwd);
-            await $`git commit -m "Ralph iteration ${state.iteration}: work in progress"`.cwd(cwd).quiet();
+            await $`git add -A`;
+            await $`git commit -m "Ralph iteration ${state.iteration}: work in progress"`.quiet();
             console.log(`📝 Auto-committed changes`);
           }
         } catch {
@@ -2331,6 +2393,18 @@ async function runRalphLoop(): Promise<void> {
       await new Promise(r => setTimeout(r, 1000));
 
     } catch (error) {
+      // Clear heartbeat timer if still running
+      if (currentHeartbeatTimer) {
+        clearInterval(currentHeartbeatTimer);
+        currentHeartbeatTimer = null;
+      }
+
+      // Abort any pending stream operations
+      if (currentAbortController) {
+        currentAbortController.abort();
+        currentAbortController = null;
+      }
+
       // Kill subprocess if still running to prevent orphaned processes
       if (currentProc) {
         try {

@@ -72,6 +72,11 @@ describe('SIGINT Cleanup Tests', () => {
       const heartbeatCountBefore = output.countPattern(/\[heartbeat\]|heartbeat/i);
       expect(heartbeatCountBefore).toBeGreaterThan(0);
       
+      const exitPromise = new Promise<number>(resolve => {
+        proc.on('exit', resolve);
+        setTimeout(() => resolve(-1), CLEANUP_WAIT);
+      });
+      
       signalSender.sendSIGINT();
       await wait(CLEANUP_WAIT);
       
@@ -80,10 +85,7 @@ describe('SIGINT Cleanup Tests', () => {
       const additionalHeartbeats = heartbeatCountAfter - heartbeatCountBefore;
       expect(additionalHeartbeats).toBe(0);
       
-      const exitCode = await new Promise<number>(resolve => {
-        proc.on('exit', resolve);
-        setTimeout(() => resolve(-1), CLEANUP_WAIT);
-      });
+      const exitCode = await exitPromise;
       expect(exitCode).toBe(0);
     });
 
@@ -206,12 +208,14 @@ describe('SIGINT Cleanup Tests', () => {
       await wait(PROCESS_START_WAIT * 2);
       
       const cleanupStart = Date.now();
-      signalSender.sendSIGINT();
-      
-      const exitCode = await new Promise<number>(resolve => {
+      const exitPromise = new Promise<number>(resolve => {
         proc.on('exit', resolve);
         setTimeout(() => resolve(-1), 5000);
       });
+      
+      signalSender.sendSIGINT();
+      
+      const exitCode = await exitPromise;
       
       const cleanupDuration = Date.now() - cleanupStart;
       
@@ -247,15 +251,17 @@ describe('SIGINT Cleanup Tests', () => {
       
       await wait(PROCESS_START_WAIT);
       
+      const exitPromise = new Promise<number>(resolve => {
+        proc.on('exit', resolve);
+        setTimeout(() => resolve(-1), CLEANUP_WAIT * 2);
+      });
+      
       signalSender.sendSIGINT();
       await wait(100);
       
       signalSender.sendSIGINT();
       
-      const exitCode = await new Promise<number>(resolve => {
-        proc.on('exit', resolve);
-        setTimeout(() => resolve(-1), CLEANUP_WAIT * 2);
-      });
+      const exitCode = await exitPromise;
       
       expect(exitCode).toBe(1);
     });
@@ -267,16 +273,18 @@ describe('SIGINT Cleanup Tests', () => {
       
       await wait(PROCESS_START_WAIT);
       
+      const exitPromise = new Promise<number>(resolve => {
+        proc.on('exit', resolve);
+        setTimeout(() => resolve(-1), CLEANUP_WAIT * 2);
+      });
+      
       signalSender.sendSIGINT();
       await wait(50);
       signalSender.sendSIGINT();
       await wait(50);
       signalSender.sendSIGINT();
       
-      const exitCode = await new Promise<number>(resolve => {
-        proc.on('exit', resolve);
-        setTimeout(() => resolve(-1), CLEANUP_WAIT * 2);
-      });
+      const exitCode = await exitPromise;
       
       expect(exitCode).toBe(1);
     });
@@ -345,15 +353,17 @@ describe('SIGINT Cleanup Tests', () => {
       
       await wait(PROCESS_START_WAIT);
       
+      const exitPromise = new Promise<number>(resolve => {
+        proc.on('exit', resolve);
+        setTimeout(() => resolve(-1), CLEANUP_WAIT * 2);
+      });
+      
       signalSender.sendSIGINT();
       await wait(100);
       
       signalSender.sendSIGINT();
       
-      const exitCode = await new Promise<number>(resolve => {
-        proc.on('exit', resolve);
-        setTimeout(() => resolve(-1), CLEANUP_WAIT * 2);
-      });
+      const exitCode = await exitPromise;
       
       expect(exitCode).toBe(1);
     });
@@ -447,13 +457,15 @@ describe('SIGINT Cleanup Tests', () => {
       ralphProcess = proc;
       signalSender.setPid(proc.pid!);
       
-      await wait(100);
-      signalSender.sendSIGINT();
-      
-      const exitCode = await new Promise<number>(resolve => {
+      const exitPromise = new Promise<number>(resolve => {
         proc.on('exit', resolve);
         setTimeout(() => resolve(-1), CLEANUP_WAIT * 2);
       });
+      
+      await wait(100);
+      signalSender.sendSIGINT();
+      
+      const exitCode = await exitPromise;
       
       expect(exitCode).toBe(0);
     });
