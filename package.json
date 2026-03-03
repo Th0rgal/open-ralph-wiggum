@@ -10,6 +10,8 @@
     "start": "bun ralph.ts",
     "build": "bun build ralph.ts --outfile bin/ralph --compile",
     "test": "bun test ./tests/ralph.test.ts",
+    "test:sigint": "bun test ./tests/sigint-cleanup.test.ts",
+    "test:all": "bun test ./tests/*.test.ts",
     "install-local": "bun link"
   },
   "files": [
