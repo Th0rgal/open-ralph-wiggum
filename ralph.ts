@@ -2115,7 +2115,7 @@ async function runRalphLoop(): Promise<void> {
         const streamed = await streamProcessOutput(proc, {
           compactTools: !verboseTools,
           toolSummaryIntervalMs: 3000,
-          heartbeatIntervalMs: 10000,
+          heartbeatIntervalMs: process.env.NODE_ENV === 'test' ? 1000 : 10000,
           iterationStart,
           agent: agentConfig,
           abortSignal: abortController.signal,
