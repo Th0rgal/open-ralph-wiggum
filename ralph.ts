@@ -1621,6 +1621,8 @@ async function streamProcessOutput(
     heartbeatIntervalMs: number;
     iterationStart: number;
     agent: AgentConfig;
+    onHeartbeatTimer?: (timer: ReturnType<typeof setInterval>) => void;
+    abortSignal?: AbortSignal;
   },
 ): Promise<{ stdoutText: string; stderrText: string; toolCounts: Map<string, number> }> {
   const toolCounts = new Map<string, number>();
@@ -1683,8 +1685,24 @@ async function streamProcessOutput(
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    
+    // Create abort promise if signal provided
+    const abortPromise = options.abortSignal
+      ? new Promise<{ value: undefined; done: true }>((resolve, reject) => {
+          const handler = () => {
+            options.abortSignal?.removeEventListener('abort', handler);
+            resolve({ value: undefined, done: true });
+          };
+          options.abortSignal.addEventListener('abort', handler);
+        })
+      : new Promise<{ value: undefined; done: true }>(() => {});
+    
     while (true) {
-      const { value, done } = await reader.read();
+      const result = options.abortSignal
+        ? await Promise.race([reader.read(), abortPromise])
+        : await reader.read();
+      
+      const { value, done } = result;
       if (done) break;
       const text = decoder.decode(value, { stream: true });
       if (text.length > 0) {
@@ -1716,6 +1734,11 @@ async function streamProcessOutput(
       lastPrintedAt = now;
     }
   }, options.heartbeatIntervalMs);
+  
+  // Notify caller of heartbeat timer for cleanup
+  if (options.onHeartbeatTimer) {
+    options.onHeartbeatTimer(heartbeatTimer);
+  }
 
   try {
     await Promise.all([
@@ -1966,6 +1989,12 @@ async function runRalphLoop(): Promise<void> {
   // Track current subprocess for cleanup on SIGINT
   let currentProc: ReturnType<typeof Bun.spawn> | null = null;
 
+  // Track current heartbeat timer for cleanup on SIGINT
+  let currentHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Track current AbortController for cancelling stream reading
+  let currentAbortController: AbortController | null = null;
+
   // Set up signal handler for graceful shutdown
   let stopping = false;
   process.on("SIGINT", () => {
@@ -1975,6 +2004,18 @@ async function runRalphLoop(): Promise<void> {
     }
     stopping = true;
     console.log("\nGracefully stopping Ralph loop...");
+
+    // Abort any pending stream operations
+    if (currentAbortController) {
+      currentAbortController.abort();
+      currentAbortController = null;
+    }
+
+    // Clear the heartbeat timer immediately to stop status messages
+    if (currentHeartbeatTimer) {
+      clearInterval(currentHeartbeatTimer);
+      currentHeartbeatTimer = null;
+    }
 
     // Kill the subprocess if it's running
     if (currentProc) {
@@ -1988,7 +2029,11 @@ async function runRalphLoop(): Promise<void> {
     clearState();
     clearPendingQuestions();
     console.log("Loop cancelled.");
-    process.exit(0);
+    
+    // Use setImmediate to allow the abort event to propagate
+    // then force exit. This is more reliable than process.exit()
+    // directly in the signal handler with pending async operations.
+    setImmediate(() => process.exit(0));
   });
 
   // Main loop
@@ -2063,13 +2108,23 @@ async function runRalphLoop(): Promise<void> {
       let toolCounts = new Map<string, number>();
 
       if (streamOutput) {
+        // Create AbortController for this iteration
+        const abortController = new AbortController();
+        currentAbortController = abortController;
+        
         const streamed = await streamProcessOutput(proc, {
           compactTools: !verboseTools,
           toolSummaryIntervalMs: 3000,
           heartbeatIntervalMs: 10000,
           iterationStart,
           agent: agentConfig,
+          abortSignal: abortController.signal,
+          onHeartbeatTimer: (timer) => {
+            currentHeartbeatTimer = timer;
+          },
         });
+        currentHeartbeatTimer = null; // Clear after streaming completes
+        currentAbortController = null; // Clear after streaming completes
         result = streamed.stdoutText;
         stderr = streamed.stderrText;
         toolCounts = streamed.toolCounts;
@@ -2331,6 +2386,18 @@ async function runRalphLoop(): Promise<void> {
       await new Promise(r => setTimeout(r, 1000));
 
     } catch (error) {
+      // Clear heartbeat timer if still running
+      if (currentHeartbeatTimer) {
+        clearInterval(currentHeartbeatTimer);
+        currentHeartbeatTimer = null;
+      }
+      
+      // Abort any pending stream operations
+      if (currentAbortController) {
+        currentAbortController.abort();
+        currentAbortController = null;
+      }
+      
       // Kill subprocess if still running to prevent orphaned processes
       if (currentProc) {
         try {
