@@ -69,13 +69,13 @@ describe('SIGINT Cleanup Tests', () => {
       
       await wait(HEARTBEAT_WAIT);
       
-      const heartbeatCountBefore = output.countPattern(/\[heartbeat\]|heartbeat/i);
+      const heartbeatCountBefore = output.countPattern(/⏳ working\.\.\./);
       expect(heartbeatCountBefore).toBeGreaterThan(0);
       
       signalSender.sendSIGINT();
       await wait(CLEANUP_WAIT);
       
-      const heartbeatCountAfter = output.countPattern(/\[heartbeat\]|heartbeat/i);
+      const heartbeatCountAfter = output.countPattern(/⏳ working\.\.\./);
       
       const additionalHeartbeats = heartbeatCountAfter - heartbeatCountBefore;
       expect(additionalHeartbeats).toBe(0);
@@ -147,12 +147,12 @@ describe('SIGINT Cleanup Tests', () => {
       
       await wait(PROCESS_START_WAIT);
       
-      const heartbeatBefore = output.countPattern(/\[heartbeat\]|heartbeat/i);
+      const heartbeatBefore = output.countPattern(/⏳ working\.\.\./);
       
       signalSender.sendSIGINT();
       await wait(HEARTBEAT_WAIT * 2);
       
-      const heartbeatAfter = output.countPattern(/\[heartbeat\]|heartbeat/i);
+      const heartbeatAfter = output.countPattern(/⏳ working\.\.\./);
       const newHeartbeats = heartbeatAfter - heartbeatBefore;
       
       expect(newHeartbeats).toBe(0);
@@ -166,12 +166,12 @@ describe('SIGINT Cleanup Tests', () => {
       
       await wait(PROCESS_START_WAIT * 2);
       
-      const timerActivityBefore = output.countPattern(/\[heartbeat\]|timer|interval/i);
+      const timerActivityBefore = output.countPattern(/⏳ working\.\.\./);
       
       signalSender.sendSIGINT();
       await wait(CLEANUP_WAIT);
       
-      const timerActivityAfter = output.countPattern(/\[heartbeat\]|timer|interval/i);
+      const timerActivityAfter = output.countPattern(/⏳ working\.\.\./);
       const newActivity = timerActivityAfter - timerActivityBefore;
       
       expect(newActivity).toBe(0);
