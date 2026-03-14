@@ -1,10 +1,11 @@
 ---
 name: open-ralph-wiggum
 description: >
-  Use this skill whenever a user wants to run, install, configure, or understand open-ralph-wiggum (ralph). Triggers on:
-  "ralph", "ralph wiggum", "agentic loop", "iterative AI loop", "autonomous coding loop",
+  Use this skill whenever a user wants to run, install, configure, or understand open-ralph-wiggum (ralph).
+  This skill can be used by any AI assistant or IDE agent (GitHub Copilot, Claude Code, Cursor, Windsurf, etc.).
+  Triggers on: "ralph", "ralph wiggum", "agentic loop", "iterative AI loop", "autonomous coding loop",
   "how to install ralph", "how to use ralph with Claude Code / Codex / Copilot / OpenCode",
-  "ralph --agent", "ralph --tasks", "ralph --status", "--max-iterations",
+  "ralph --agent", "ralph --tasks", "ralph --status", "--max-iterations", "--rotation",
   "how do I run ralph in VS Code / Cursor / JetBrains / Neovim",
   or any question about looping an AI coding agent until a task is done.
   Even if the user doesn't say "ralph" explicitly — if they want to run an AI agent in a loop
@@ -120,6 +121,10 @@ Use environment variables to point to a custom binary path if the CLI is not on 
 --list-tasks             List current tasks (Tasks Mode)
 --add-task TEXT          Add a task (Tasks Mode)
 --remove-task N          Remove task by index (Tasks Mode)
+--rotation LIST          Cycle through agent/model pairs each iteration (comma-separated agent:model)
+--verbose-tools          Print every tool line (disable compact tool summary)
+--no-questions           Disable interactive question handling (agent will loop on questions)
+--init-config [PATH]     Write default agent config to PATH and exit
 ```
 
 ---
@@ -256,6 +261,81 @@ Use with:
 ```bash
 ralph "Your task" --prompt-template ./my-template.md
 ```
+
+---
+
+## Agent Rotation
+
+Cycle through different agent/model combinations across iterations:
+
+```bash
+# Alternate between OpenCode and Claude Code
+ralph "Build a REST API" \
+  --rotation "opencode:claude-sonnet-4,claude-code:claude-sonnet-4" \
+  --max-iterations 10
+
+# Three-way rotation
+ralph "Refactor the auth module" \
+  --rotation "opencode:claude-sonnet-4,claude-code:claude-sonnet-4,codex:gpt-5-codex" \
+  --max-iterations 15
+```
+
+Format: `agent:model` entries separated by commas. When `--rotation` is set, `--agent` and `--model` are ignored. The list cycles (iteration 3 of a 2-entry rotation goes back to entry 1).
+
+---
+
+## Agent-Specific Notes
+
+### OpenCode (default)
+
+- Default model can be set in `~/.config/opencode/opencode.json`:
+  ```json
+  { "$schema": "https://opencode.ai/config.json", "model": "your-provider/model-name" }
+  ```
+- Use `--no-plugins` if OpenCode tries to load a `ralph-wiggum` plugin.
+
+### Claude Code
+
+```bash
+ralph "Refactor the auth module and ensure tests pass" \
+  --agent claude-code --model claude-sonnet-4 --max-iterations 15
+```
+
+### OpenAI Codex
+
+```bash
+ralph "Generate unit tests for all utility functions" \
+  --agent codex --model gpt-5-codex --max-iterations 10
+```
+
+### Copilot CLI
+
+Requires a GitHub Copilot subscription. Authenticate before running:
+
+```bash
+copilot /login   # or set GH_TOKEN / GITHUB_TOKEN env var
+```
+
+Install:
+```bash
+npm install -g @github/copilot
+# or
+brew install copilot-cli
+```
+
+Usage:
+```bash
+ralph "Refactor the auth module and add tests" \
+  --agent copilot --max-iterations 15
+
+# With a specific model
+ralph "Build a REST API" \
+  --agent copilot --model claude-opus-4.6 --max-iterations 10
+```
+
+Notes:
+- Default model is Claude Sonnet 4.5; override with `--model`
+- `--no-plugins` has no effect with Copilot CLI
 
 ---
 
