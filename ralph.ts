@@ -10,6 +10,13 @@ import { $ } from "bun";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "fs";
 import { join } from "path";
 import { checkTerminalPromise, stripAnsi, tasksMarkdownAllComplete } from "./completion";
+import {
+  decideLoopOwnership,
+  pruneExpiredBlacklistedAgents,
+  selectRotationEntry,
+  StreamActivityTracker,
+  type BlacklistedAgent,
+} from "./loop-runtime";
 
 const VERSION = "1.2.2";
 
@@ -311,6 +318,15 @@ Options:
                       Valid agents: opencode, claude-code, codex
                       Example: --rotation "opencode:claude-sonnet-4,claude-code:gpt-4o"
                       When used, --agent and --model are ignored
+  --stalling-timeout DURATION  Time without activity before considering agent stalled (default: 2h)
+                      Supports: ms, s, m, h (e.g., 5000, 30s, 5m, 2h)
+  --blacklist-duration DURATION  How long to blacklist a stalled agent (default: 8h)
+                      Only used with --stalling-action rotate
+  --stalling-action ACTION  What to do when agent stalls: stop (default) or rotate
+                      stop: Stop the loop entirely
+                      rotate: Switch to next agent and blacklist current one
+  --heartbeat-interval DURATION  How often to print heartbeat status messages (default: 10s)
+                      Supports: ms, s, m, h (e.g., 5000, 30s, 5m, 2h)
   --prompt-file, --file, -f  Read prompt content from a file
   --prompt-template PATH  Use custom prompt template (supports variables)
   --no-stream         Buffer agent output and print at the end
@@ -381,6 +397,15 @@ interface IterationHistory {
   errors: string[];
 }
 
+interface StallingEvent {
+  iteration: number;
+  agent: string;
+  model: string;
+  timestamp: string;
+  lastActivityMs: number;
+  action: "stop" | "rotate";
+}
+
 interface RalphHistory {
   iterations: IterationHistory[];
   totalDurationMs: number;
@@ -389,12 +414,14 @@ interface RalphHistory {
     noProgressIterations: number;
     shortIterations: number;
   };
+  stallingEvents?: StallingEvent[];
 }
 
 const EMPTY_HISTORY: RalphHistory = {
   iterations: [],
   totalDurationMs: 0,
-  struggleIndicators: { repeatedErrors: {}, noProgressIterations: 0, shortIterations: 0 }
+  struggleIndicators: { repeatedErrors: {}, noProgressIterations: 0, shortIterations: 0 },
+  stallingEvents: []
 };
 
 // Load history
@@ -841,6 +868,10 @@ let streamOutput = true;
 let verboseTools = false;
 let promptSource = "";
 let handleQuestions = true;
+let stallingTimeoutMs = 2 * 60 * 60 * 1000; // Default: 2 hours
+let blacklistDurationMs = 8 * 60 * 60 * 1000; // Default: 8 hours
+let stallingAction: "stop" | "rotate" = "stop"; // Default: stop
+let heartbeatIntervalMs = process.env.NODE_ENV === 'test' ? 1000 : 10000; // Default: 10 seconds
 
 const promptParts: string[] = [];
 let extraAgentFlags: string[] = [];
@@ -877,6 +908,37 @@ function parseRotationInput(raw: string): string[] {
     parsed.push(`${agent}:${modelName}`);
   }
   return parsed;
+}
+
+// Parse duration string to milliseconds
+// Supports: ms, s, m, h (e.g., 5000, 30s, 5m, 2h)
+function parseDuration(input: string): number {
+  const trimmed = input.trim();
+  
+  // If it's just a number, treat as milliseconds
+  if (/^\d+$/.test(trimmed)) {
+    return parseInt(trimmed);
+  }
+  
+  // Parse with unit suffix
+  const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*(ms|s|m|h)$/i);
+  if (!match) {
+    console.error(`Error: Invalid duration format '${input}'. Use number or number+unit (e.g., 5000, 30s, 5m, 2h)`);
+    process.exit(1);
+  }
+  
+  const value = parseFloat(match[1]);
+  const unit = match[2].toLowerCase();
+  
+  switch (unit) {
+    case 'ms': return value;
+    case 's': return value * 1000;
+    case 'm': return value * 60 * 1000;
+    case 'h': return value * 60 * 60 * 1000;
+    default:
+      console.error(`Error: Unknown duration unit '${unit}'`);
+      process.exit(1);
+  }
 }
 
 for (let i = 0; i < args.length; i++) {
@@ -933,6 +995,34 @@ for (let i = 0; i < args.length; i++) {
       process.exit(1);
     }
     rotationInput = val;
+  } else if (arg === "--stalling-timeout") {
+    const val = args[++i];
+    if (!val) {
+      console.error("Error: --stalling-timeout requires a value");
+      process.exit(1);
+    }
+    stallingTimeoutMs = parseDuration(val);
+  } else if (arg === "--blacklist-duration") {
+    const val = args[++i];
+    if (!val) {
+      console.error("Error: --blacklist-duration requires a value");
+      process.exit(1);
+    }
+    blacklistDurationMs = parseDuration(val);
+  } else if (arg === "--stalling-action") {
+    const val = args[++i];
+    if (!val || (val !== "stop" && val !== "rotate")) {
+      console.error("Error: --stalling-action requires 'stop' or 'rotate'");
+      process.exit(1);
+    }
+    stallingAction = val as "stop" | "rotate";
+  } else if (arg === "--heartbeat-interval") {
+    const val = args[++i];
+    if (!val) {
+      console.error("Error: --heartbeat-interval requires a value");
+      process.exit(1);
+    }
+    heartbeatIntervalMs = parseDuration(val);
   } else if (arg === "--model") {
     const val = args[++i];
     if (!val) {
@@ -1056,10 +1146,15 @@ interface RalphState {
   prompt: string;
   promptTemplate?: string; // Custom prompt template path
   startedAt: string;
+  pid?: number;
   model: string;
   agent: AgentType;
   rotation?: string[];
   rotationIndex?: number;
+  stallingTimeoutMs?: number;
+  blacklistDurationMs?: number;
+  stallingAction?: "stop" | "rotate";
+  blacklistedAgents?: BlacklistedAgent[];
 }
 
 // Create or update state
@@ -1623,14 +1718,17 @@ async function streamProcessOutput(
     agent: AgentConfig;
     onHeartbeatTimer?: (timer: ReturnType<typeof setInterval>) => void;
     abortSignal?: AbortSignal;
+    stallingTimeoutMs?: number;
+    onStallingDetected?: () => void;
   },
-): Promise<{ stdoutText: string; stderrText: string; toolCounts: Map<string, number> }> {
+): Promise<{ stdoutText: string; stderrText: string; toolCounts: Map<string, number>; stalled: boolean }> {
   const toolCounts = new Map<string, number>();
   let stdoutText = "";
   let stderrText = "";
   let lastPrintedAt = Date.now();
-  let lastActivityAt = Date.now();
+  const activityTracker = new StreamActivityTracker();
   let lastToolSummaryAt = 0;
+  let stalled = false;
 
   const compactTools = options.compactTools;
   const parseToolOutput = options.agent.parseToolOutput;
@@ -1650,7 +1748,7 @@ async function streamProcessOutput(
   };
 
   const handleLine = (line: string, isError: boolean) => {
-    lastActivityAt = Date.now();
+    activityTracker.markLine();
     const tool = parseToolOutput(line);
     const outputLines = options.agent.type === "claude-code" ? extractClaudeStreamDisplayLines(line) : [line];
     if (tool) {
@@ -1706,6 +1804,7 @@ async function streamProcessOutput(
       if (done) break;
       const text = decoder.decode(value, { stream: true });
       if (text.length > 0) {
+        activityTracker.markChunk(text);
         onText(text);
         buffer += text;
         const lines = buffer.split(/\r?\n/);
@@ -1729,9 +1828,20 @@ async function streamProcessOutput(
     const now = Date.now();
     if (now - lastPrintedAt >= options.heartbeatIntervalMs) {
       const elapsed = formatDuration(now - options.iterationStart);
-      const sinceActivity = formatDuration(now - lastActivityAt);
+      const sinceActivity = formatDuration(now - activityTracker.lastActivityAt);
       console.log(`⏳ working... elapsed ${elapsed} · last activity ${sinceActivity} ago`);
       lastPrintedAt = now;
+      
+      // Check for stalling
+      if (options.stallingTimeoutMs && now - activityTracker.lastActivityAt >= options.stallingTimeoutMs && !stalled) {
+        stalled = true;
+        console.log(`\n⚠️  Agent stalled: no activity for ${formatDuration(now - activityTracker.lastActivityAt)}`);
+        if (options.onStallingDetected) {
+          options.onStallingDetected();
+        }
+        // Kill the process to stop the iteration
+        proc.kill();
+      }
     }
   }, options.heartbeatIntervalMs);
   
@@ -1765,7 +1875,7 @@ async function streamProcessOutput(
     maybePrintToolSummary(true);
   }
 
-  return { stdoutText, stderrText, toolCounts };
+  return { stdoutText, stderrText, toolCounts, stalled };
 }
 // Main loop
 // Helper to detect per-iteration file changes using content hashes
@@ -1862,7 +1972,14 @@ function extractErrors(output: string): string[] {
 async function runRalphLoop(): Promise<void> {
   // Check if a loop is already running
   const existingState = loadState();
-  const resuming = !!existingState?.active;
+  const ownership = decideLoopOwnership(existingState, process.pid);
+  if (ownership.status === "already-running") {
+    console.error(`Error: Ralph loop is already running with PID ${ownership.ownerPid}.`);
+    console.error(`Stop the existing process or clear ${statePath} if it is stale.`);
+    process.exit(1);
+  }
+
+  const resuming = ownership.status === "resume";
   if (resuming) {
     minIterations = existingState.minIterations;
     maxIterations = existingState.maxIterations;
@@ -1875,6 +1992,9 @@ async function runRalphLoop(): Promise<void> {
     model = existingState.model;
     agentType = existingState.agent;
     rotation = existingState.rotation ?? null;
+    if (ownership.ownerPid && ownership.ownerPid !== process.pid) {
+      console.log(`⚠️  Recovered stale active state from PID ${ownership.ownerPid}`);
+    }
     console.log(`🔄 Resuming Ralph loop from ${statePath}`);
   }
 
@@ -1933,15 +2053,31 @@ async function runRalphLoop(): Promise<void> {
     prompt,
     promptTemplate: promptTemplatePath || undefined,
     startedAt: new Date().toISOString(),
+    pid: process.pid,
     model: initialModel,
     agent: initialAgentType,
     rotation: rotation ?? undefined,
     rotationIndex: rotationActive ? 0 : undefined,
+    stallingTimeoutMs,
+    blacklistDurationMs,
+    stallingAction,
+    blacklistedAgents: [],
   };
-
-  if (!resuming) {
-    saveState(state);
+  
+  // Ensure blacklistedAgents array exists (for backward compatibility)
+  if (!state.blacklistedAgents) {
+    state.blacklistedAgents = [];
   }
+  
+  // Update stalling config if resuming (allow runtime override)
+  if (resuming) {
+    state.pid = process.pid;
+    state.stallingTimeoutMs = stallingTimeoutMs;
+    state.blacklistDurationMs = blacklistDurationMs;
+    state.stallingAction = stallingAction;
+  }
+
+  saveState(state);
 
   // Create tasks file if tasks mode is enabled and file doesn't exist
   if (tasksMode && !existsSync(tasksPath)) {
@@ -2061,17 +2197,46 @@ async function runRalphLoop(): Promise<void> {
     // Capture git state before iteration to detect per-iteration changes
     const snapshotBefore = await captureFileSnapshot();
 
+    // Clean up expired blacklisted agents
+    const now = Date.now();
+    if (state.blacklistedAgents && state.blacklistedAgents.length > 0) {
+      const { active, expiredAgents } = pruneExpiredBlacklistedAgents(state.blacklistedAgents, now);
+      for (const agent of expiredAgents) {
+        console.log(`📋 Blacklist expired for ${agent}`);
+      }
+      state.blacklistedAgents = active;
+      saveState(state);
+    }
+
     const usingRotation = !!(state.rotation && state.rotation.length > 0);
-    const rotationIndex = usingRotation
+    let rotationIndex = usingRotation
       ? ((state.rotationIndex ?? 0) % state.rotation.length + state.rotation.length) % state.rotation.length
       : 0;
     let currentAgent: AgentType = state.agent;
     let currentModel = state.model;
+    
     if (usingRotation) {
-      const entry = state.rotation[rotationIndex];
-      const [entryAgent, entryModel] = entry.split(":");
+      const selection = selectRotationEntry(
+        state.rotation!,
+        rotationIndex,
+        state.blacklistedAgents || [],
+      );
+
+      for (const skippedAgent of selection.skippedAgents) {
+        console.log(`⏭️  Skipping blacklisted agent: ${skippedAgent}`);
+      }
+
+      if (selection.clearedBlacklist) {
+        console.log(`\n⚠️  All agents in rotation are blacklisted. Clearing blacklists.`);
+        state.blacklistedAgents = [];
+        saveState(state);
+      }
+
+      rotationIndex = selection.rotationIndex;
+      const [entryAgent, entryModel] = selection.entry.split(":");
       currentAgent = entryAgent as AgentType;
       currentModel = entryModel;
+      state.rotationIndex = rotationIndex;
     }
     const agentConfig = AGENTS[currentAgent];
 
@@ -2115,10 +2280,11 @@ async function runRalphLoop(): Promise<void> {
         const streamed = await streamProcessOutput(proc, {
           compactTools: !verboseTools,
           toolSummaryIntervalMs: 3000,
-          heartbeatIntervalMs: process.env.NODE_ENV === 'test' ? 1000 : 10000,
+          heartbeatIntervalMs: heartbeatIntervalMs,
           iterationStart,
           agent: agentConfig,
           abortSignal: abortController.signal,
+          stallingTimeoutMs: state.stallingTimeoutMs,
           onHeartbeatTimer: (timer) => {
             currentHeartbeatTimer = timer;
           },
@@ -2128,11 +2294,141 @@ async function runRalphLoop(): Promise<void> {
         result = streamed.stdoutText;
         stderr = streamed.stderrText;
         toolCounts = streamed.toolCounts;
+        
+        // Handle stalling detection
+        if (streamed.stalled) {
+          console.log(`\n🛑 Stalling detected for agent: ${currentAgent}`);
+          
+          // Record stalling event
+          const stallingEvent: StallingEvent = {
+            iteration: state.iteration,
+            agent: currentAgent,
+            model: currentModel,
+            timestamp: new Date().toISOString(),
+            lastActivityMs: state.stallingTimeoutMs || stallingTimeoutMs,
+            action: state.stallingAction || stallingAction,
+          };
+          
+          if (!history.stallingEvents) {
+            history.stallingEvents = [];
+          }
+          history.stallingEvents.push(stallingEvent);
+          saveHistory(history);
+          
+          // Handle based on action
+          if (state.stallingAction === "rotate" && state.rotation && state.rotation.length > 0) {
+            // Blacklist current agent
+            const blacklistEntry: BlacklistedAgent = {
+              agent: currentAgent,
+              blacklistedAt: new Date().toISOString(),
+              durationMs: state.blacklistDurationMs || blacklistDurationMs,
+            };
+            
+            // Remove any existing blacklist entry for this agent
+            state.blacklistedAgents = (state.blacklistedAgents || []).filter(
+              (b) => b.agent !== currentAgent
+            );
+            state.blacklistedAgents.push(blacklistEntry);
+            
+            console.log(`📋 Blacklisted ${currentAgent} for ${formatDuration(blacklistEntry.durationMs)}`);
+            
+            // Rotate to next agent
+            const nextIndex = ((state.rotationIndex ?? 0) + 1) % state.rotation.length;
+            state.rotationIndex = nextIndex;
+            console.log(`🔄 Rotating to next agent in rotation: ${state.rotation[nextIndex]}`);
+            
+            saveState(state);
+            // Continue to next iteration
+            continue;
+          } else {
+            // Stop action (default)
+            console.log(`\n🛑 Stopping loop due to stalling`);
+            state.active = false;
+            saveState(state);
+            break;
+          }
+        }
       } else {
+        // Non-streaming mode - need to handle stalling detection differently
         const stdoutPromise = new Response(proc.stdout).text();
         const stderrPromise = new Response(proc.stderr).text();
-        [result, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+        
+        // Set up stalling detection timer for non-streaming mode
+        let stalled = false;
+        const stallingTimer = setInterval(() => {
+          const now = Date.now();
+          const elapsed = now - iterationStart;
+          
+          if (state.stallingTimeoutMs && elapsed >= state.stallingTimeoutMs) {
+            stalled = true;
+            console.log(`\n⚠️  Agent stalled: no output for ${formatDuration(elapsed)}`);
+            console.log(`\n🛑 Stalling detected for agent: ${currentAgent}`);
+            
+            // Kill the process
+            proc.kill();
+            clearInterval(stallingTimer);
+          }
+        }, heartbeatIntervalMs);
+        
+        try {
+          [result, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+        } finally {
+          clearInterval(stallingTimer);
+        }
+        
         toolCounts = collectToolSummaryFromText(`${result}\n${stderr}`, agentConfig);
+        
+        // Handle stalling detection for non-streaming mode
+        if (stalled) {
+          // Record stalling event
+          const stallingEvent: StallingEvent = {
+            iteration: state.iteration,
+            agent: currentAgent,
+            model: currentModel,
+            timestamp: new Date().toISOString(),
+            lastActivityMs: state.stallingTimeoutMs || stallingTimeoutMs,
+            action: state.stallingAction || stallingAction,
+          };
+          
+          if (!history.stallingEvents) {
+            history.stallingEvents = [];
+          }
+          history.stallingEvents.push(stallingEvent);
+          saveHistory(history);
+          
+          // Handle based on action
+          if (state.stallingAction === "rotate" && state.rotation && state.rotation.length > 0) {
+            // Blacklist current agent
+            const blacklistEntry: BlacklistedAgent = {
+              agent: currentAgent,
+              blacklistedAt: new Date().toISOString(),
+              durationMs: state.blacklistDurationMs || blacklistDurationMs,
+            };
+            
+            // Remove any existing blacklist entry for this agent
+            state.blacklistedAgents = (state.blacklistedAgents || []).filter(
+              (b) => b.agent !== currentAgent
+            );
+            state.blacklistedAgents.push(blacklistEntry);
+            
+            console.log(`📋 Blacklisted ${currentAgent} for ${formatDuration(blacklistEntry.durationMs)}`);
+            
+            // Rotate to next agent
+            const nextIndex = ((state.rotationIndex ?? 0) + 1) % state.rotation.length;
+            state.rotationIndex = nextIndex;
+            console.log(`🔄 Rotating to next agent in rotation: ${state.rotation[nextIndex]}`);
+            
+            saveState(state);
+            // Continue to next iteration
+            continue;
+          } else {
+            // Stop action (default)
+            console.log(`\n🛑 Stopping loop due to stalling`);
+            state.active = false;
+            saveState(state);
+            break;
+          }
+        }
       }
 
       const exitCode = await exitCodePromise;
