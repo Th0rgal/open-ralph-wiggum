@@ -16,6 +16,7 @@
     "bin/ralph.js",
     "ralph.ts",
     "completion.ts",
+    "loop-runtime.ts",
     "README.md",
     "LICENSE",
     "install.sh",
