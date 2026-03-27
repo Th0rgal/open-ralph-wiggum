@@ -193,13 +193,9 @@ Use environment variables to point to a custom binary path if the CLI is not on 
 --remove-task N          Remove task by index (Tasks Mode)
 --rotation LIST          Cycle through agent/model pairs each iteration (comma-separated agent:model)
 --verbose-tools          Print every tool line (disable compact tool summary)
---no-questions           Disable interactive question handling (agent will loop on questions)
---init-config [PATH]     Write default agent config to PATH and exit
 --task-promise T        Text that signals task completion (default: READY_FOR_NEXT_TASK)
 --no-stream             Buffer agent output and print at the end
 --no-allow-all          Require interactive permission prompts
---config PATH           Use custom agent config file
---questions             Enable interactive question handling (default: enabled)
 ```
 
 ---
