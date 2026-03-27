@@ -198,6 +198,8 @@ Use environment variables to point to a custom binary path if the CLI is not on 
 --task-promise T        Text that signals task completion (default: READY_FOR_NEXT_TASK)
 --no-stream             Buffer agent output and print at the end
 --no-allow-all          Require interactive permission prompts
+--config PATH           Use custom agent config file
+--init-config [PATH]    Write default agent config to PATH and exit
 --questions             Enable interactive question handling (default: enabled)
 ```
 

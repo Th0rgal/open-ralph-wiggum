@@ -322,6 +322,8 @@ Options:
   --allow-all         Auto-approve all tool permissions (default: on)
   --no-allow-all      Require interactive permission prompts
   --last-activity-timeout DURATION  Kill and restart iteration after inactivity (e.g., 30m, 1h, 300s)
+  --config PATH       Use custom agent config file
+  --init-config [PATH]  Write default agent config to PATH
   --version, -v       Show version
   --help, -h          Show this help
   --                  Pass all remaining arguments to the agent (e.g., -- --extra-tags)
