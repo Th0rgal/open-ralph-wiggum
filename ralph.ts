@@ -2146,9 +2146,23 @@ async function runRalphLoop(): Promise<void> {
       }
 
       const combinedOutput = `${result}\n${stderr}`;
-      const completionSignalDetected = checkCompletion(result, completionPromise);
-      const abortDetected = abortPromise ? checkCompletion(result, abortPromise) : false;
-      const taskCompletionDetected = tasksMode ? checkCompletion(result, taskPromise) : false;
+
+      // Claude Code outputs JSON stream (one JSON object per line), not plain text.
+      // The completion promise regex won't match raw JSON. Extract display text first.
+      let completionCheckText = result;
+      if (agentConfig.type === "claude-code") {
+        const displayLines: string[] = [];
+        for (const rawLine of result.split(/\r?\n/)) {
+          for (const dl of extractClaudeStreamDisplayLines(rawLine)) {
+            if (dl.trim()) displayLines.push(dl.trim());
+          }
+        }
+        completionCheckText = displayLines.join("\n");
+      }
+
+      const completionSignalDetected = checkCompletion(completionCheckText, completionPromise);
+      const abortDetected = abortPromise ? checkCompletion(completionCheckText, abortPromise) : false;
+      const taskCompletionDetected = tasksMode ? checkCompletion(completionCheckText, taskPromise) : false;
 
       let completionDetected = completionSignalDetected;
       if (tasksMode && completionSignalDetected) {
