@@ -321,8 +321,7 @@ Options:
   --no-commit         Don't auto-commit after each iteration
   --allow-all         Auto-approve all tool permissions (default: on)
   --no-allow-all      Require interactive permission prompts
-  --config PATH       Use custom agent config file
-  --init-config [PATH]  Write default agent config to PATH
+  --last-activity-timeout DURATION  Kill and restart iteration after inactivity (e.g., 30m, 1h, 300s)
   --version, -v       Show version
   --help, -h          Show this help
   --                  Pass all remaining arguments to the agent (e.g., -- --extra-tags)
@@ -841,6 +840,7 @@ let streamOutput = true;
 let verboseTools = false;
 let promptSource = "";
 let handleQuestions = true;
+let lastActivityTimeoutMs = 0; // 0 = disabled
 
 const promptParts: string[] = [];
 let extraAgentFlags: string[] = [];
@@ -972,6 +972,20 @@ for (let i = 0; i < args.length; i++) {
     handleQuestions = true;
   } else if (arg === "--no-questions") {
     handleQuestions = false;
+  } else if (arg === "--last-activity-timeout") {
+    const val = args[++i];
+    if (!val) {
+      console.error("Error: --last-activity-timeout requires a duration (e.g., 30m, 1h, 300s)");
+      process.exit(1);
+    }
+    const match = val.match(/^(\d+)(s|m|h)$/);
+    if (!match) {
+      console.error("Error: --last-activity-timeout format must be a number followed by s, m, or h (e.g., 30m, 1h, 300s)");
+      process.exit(1);
+    }
+    const amount = parseInt(match[1]);
+    const unit = match[2];
+    lastActivityTimeoutMs = amount * (unit === "h" ? 3600000 : unit === "m" ? 60000 : 1000);
   } else if (arg.startsWith("-")) {
     console.error(`Error: Unknown option: ${arg}`);
     console.error("Run 'ralph --help' for available options");
@@ -1623,6 +1637,8 @@ async function streamProcessOutput(
     agent: AgentConfig;
     onHeartbeatTimer?: (timer: ReturnType<typeof setInterval>) => void;
     abortSignal?: AbortSignal;
+    lastActivityTimeoutMs?: number;
+    onActivityTimeout?: () => void;
   },
 ): Promise<{ stdoutText: string; stderrText: string; toolCounts: Map<string, number> }> {
   const toolCounts = new Map<string, number>();
@@ -1733,6 +1749,15 @@ async function streamProcessOutput(
       console.log(`⏳ working... elapsed ${elapsed} · last activity ${sinceActivity} ago`);
       lastPrintedAt = now;
     }
+    // Check for inactivity timeout
+    if (options.lastActivityTimeoutMs && options.lastActivityTimeoutMs > 0) {
+      const inactivityMs = now - lastActivityAt;
+      if (inactivityMs >= options.lastActivityTimeoutMs) {
+        const timeoutDuration = formatDuration(options.lastActivityTimeoutMs);
+        console.log(`\n⏰ Inactivity timeout: no activity for ${timeoutDuration}. Restarting iteration...`);
+        options.onActivityTimeout?.();
+      }
+    }
   }, options.heartbeatIntervalMs);
   
   // Notify caller of heartbeat timer for cleanup
@@ -1796,13 +1821,18 @@ async function captureFileSnapshot(): Promise<FileSnapshot> {
       }
     }
 
-    // Get hash for each file (using git hash-object for content comparison)
-    for (const file of allFiles) {
+    // Batch hash all files in a single git hash-object call via --stdin-paths
+    const fileList = [...allFiles].filter(f => existsSync(join(cwd, f)));
+    if (fileList.length > 0) {
       try {
-        const hash = await $`git hash-object ${file} 2>/dev/null || stat -f '%m' ${file} 2>/dev/null || echo ''`.cwd(cwd).text();
-        files.set(file, hash.trim());
+        const input = fileList.join("\n");
+        const hashes = await $`echo ${input} | git hash-object --stdin-paths`.cwd(cwd).text();
+        const hashLines = hashes.trim().split("\n");
+        for (let i = 0; i < fileList.length && i < hashLines.length; i++) {
+          files.set(fileList[i], hashLines[i].trim());
+        }
       } catch {
-        // File may not exist, skip
+        // Fallback: no hashes available
       }
     }
   } catch {
@@ -2119,6 +2149,10 @@ async function runRalphLoop(): Promise<void> {
           iterationStart,
           agent: agentConfig,
           abortSignal: abortController.signal,
+          lastActivityTimeoutMs,
+          onActivityTimeout: () => {
+            try { proc.kill(); } catch {}
+          },
           onHeartbeatTimer: (timer) => {
             currentHeartbeatTimer = timer;
           },
@@ -2146,9 +2180,22 @@ async function runRalphLoop(): Promise<void> {
       }
 
       const combinedOutput = `${result}\n${stderr}`;
-      const completionSignalDetected = checkCompletion(result, completionPromise);
-      const abortDetected = abortPromise ? checkCompletion(result, abortPromise) : false;
-      const taskCompletionDetected = tasksMode ? checkCompletion(result, taskPromise) : false;
+
+      // For Claude Code, extract display text from JSON stream before checking completion
+      let completionCheckText = result;
+      if (agentConfig.type === "claude-code") {
+        const displayLines: string[] = [];
+        for (const rawLine of result.split(/\r?\n/)) {
+          for (const dl of extractClaudeStreamDisplayLines(rawLine)) {
+            if (dl.trim()) displayLines.push(dl.trim());
+          }
+        }
+        completionCheckText = displayLines.join("\n");
+      }
+
+      const completionSignalDetected = checkCompletion(completionCheckText, completionPromise);
+      const abortDetected = abortPromise ? checkCompletion(completionCheckText, abortPromise) : false;
+      const taskCompletionDetected = tasksMode ? checkCompletion(completionCheckText, taskPromise) : false;
 
       let completionDetected = completionSignalDetected;
       if (tasksMode && completionSignalDetected) {
