@@ -2126,7 +2126,8 @@ async function runRalphLoop(): Promise<void> {
 
       // Run agent using spawn for better argument handling
       // stdin is inherited so users can respond to permission prompts if needed
-      currentProc = Bun.spawn([agentConfig.command, ...cmdArgs], {
+      const command = process.platform === "win32" && agentConfig.command === "opencode"? "opencode.cmd": agentConfig.command;
+      currentProc = Bun.spawn([command, ...cmdArgs], {
         cwd: process.cwd(),
         env,
         stdin: "inherit",
