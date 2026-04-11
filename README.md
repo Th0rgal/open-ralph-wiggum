@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">Open Ralph Wiggum</h1>
-  <h3 align="center">Autonomous Agentic Loop for Claude Code, Codex, Copilot CLI & OpenCode</h3>
+  <h3 align="center">Autonomous Agentic Loop for Claude Code, Codex, Copilot CLI, Cursor Agent & OpenCode</h3>
 </p>
 
 <p align="center">
@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <em>Works with <b>Claude Code</b>, <b>OpenAI Codex</b>, <b>Copilot CLI</b>, and <b>OpenCode</b> — switch agents with <code>--agent</code>.</em><br>
+  <em>Works with <b>Claude Code</b>, <b>OpenAI Codex</b>, <b>Copilot CLI</b>, <b>Cursor Agent</b>, and <b>OpenCode</b> — switch agents with <code>--agent</code>.</em><br>
   <em>Based on the <a href="https://ghuntley.com/ralph/">Ralph Wiggum technique</a> by Geoffrey Huntley</em>
 </p>
 
@@ -46,6 +46,7 @@ Open Ralph Wiggum works with multiple AI coding agents. Switch between them usin
 | **Claude Code** | `--agent claude-code` | Anthropic's Claude Code CLI for autonomous coding |
 | **Codex** | `--agent codex` | OpenAI's Codex CLI for AI-powered development |
 | **Copilot CLI** | `--agent copilot` | GitHub Copilot CLI for agentic coding |
+| **Cursor Agent** | `--agent cursor-agent` | Cursor Agent CLI for headless AI coding |
 | **OpenCode** | `--agent opencode` | Default agent, open-source AI coding assistant |
 
 ```bash
@@ -58,6 +59,9 @@ ralph "Create a CLI tool" --agent codex --max-iterations 10
 # Use Copilot CLI
 ralph "Refactor the auth module" --agent copilot --max-iterations 10
 
+# Use Cursor Agent
+ralph "Add unit tests" --agent cursor-agent --max-iterations 10
+
 # Use OpenCode (default)
 ralph "Fix the failing tests" --max-iterations 10
 ```
@@ -66,7 +70,7 @@ ralph "Fix the failing tests" --max-iterations 10
 
 ## What is Open Ralph Wiggum?
 
-Open Ralph Wiggum implements the **Ralph Wiggum technique** — an autonomous agentic loop where an AI coding agent (Claude Code, Codex, or OpenCode) receives the **same prompt repeatedly** until it completes a task. Each iteration, the AI sees its previous work in files and git history, enabling self-correction and incremental progress.
+Open Ralph Wiggum implements the **Ralph Wiggum technique** — an autonomous agentic loop where an AI coding agent (Claude Code, Codex, Cursor Agent, or OpenCode) receives the **same prompt repeatedly** until it completes a task. Each iteration, the AI sees its previous work in files and git history, enabling self-correction and incremental progress.
 
 This is a **CLI tool** that wraps any supported AI coding agent in a persistent development loop. No plugins required — just install and run.
 
@@ -86,6 +90,7 @@ Switch between AI coding agents without changing your workflow:
 - **Claude Code** (`--agent claude-code`) — Anthropic's powerful coding agent
 - **Codex** (`--agent codex`) — OpenAI's code-specialized model
 - **Copilot CLI** (`--agent copilot`) — GitHub's agentic coding tool
+- **Cursor Agent** (`--agent cursor-agent`) — Cursor's headless AI coding agent
 - **OpenCode** (`--agent opencode`) — Open-source default option
 
 ## Key Features
@@ -116,6 +121,7 @@ Switch between AI coding agents without changing your workflow:
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — Anthropic's Claude Code CLI
   - [Codex](https://github.com/openai/codex) — OpenAI's Codex CLI
   - [Copilot CLI](https://github.com/github/copilot-cli) — GitHub's Copilot CLI
+  - [Cursor Agent](https://cursor.com/cli/) — Cursor's headless Agent CLI
   - [OpenCode](https://opencode.ai) — Open-source AI coding assistant
 
 ### npm (recommended)
@@ -185,6 +191,7 @@ Configure agent binaries with these environment variables:
 | `RALPH_CLAUDE_BINARY` | Path to Claude Code CLI | `"claude"` |
 | `RALPH_CODEX_BINARY` | Path to Codex CLI | `"codex"` |
 | `RALPH_COPILOT_BINARY` | Path to Copilot CLI | `"copilot"` |
+| `RALPH_CURSOR_AGENT_BINARY` | Path to Cursor Agent CLI | `"cursor-agent"` |
 
 **Note for Windows users:** Ralph automatically resolves `.cmd` extensions for npm-installed CLIs. If you encounter "command not found" errors, you can use these environment variables to specify the full path to the executable.
 
@@ -196,7 +203,7 @@ Configure agent binaries with these environment variables:
 ralph "<prompt>" [options]
 
 Options:
-  --agent AGENT            AI agent to use: opencode (default), claude-code, codex, copilot
+  --agent AGENT            AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent
   --min-iterations N       Minimum iterations before completion allowed (default: 1)
   --max-iterations N       Stop after N iterations (default: unlimited)
   --completion-promise T   Text that signals completion (default: COMPLETE)
@@ -689,6 +696,34 @@ ralph "Build a REST API" \
 - `--no-plugins` has no effect with Copilot CLI
 - Authentication: set `GH_TOKEN` / `GITHUB_TOKEN` env var, or run `copilot /login` first
 
+### Cursor Agent
+
+[Cursor Agent](https://cursor.com/cli/) is Cursor's headless CLI agent. It works with any model available through your Cursor subscription.
+
+**Install:**
+```bash
+curl https://cursor.com/install -fsSL | bash
+```
+
+**Usage:**
+```bash
+ralph "Add integration tests for the API" \
+  --agent cursor-agent \
+  --max-iterations 10
+
+# With a specific model
+ralph "Refactor the database layer" \
+  --agent cursor-agent \
+  --model sonnet-4 \
+  --max-iterations 15
+```
+
+**Notes:**
+- `--allow-all` (default) maps to `--force` in Cursor Agent CLI
+- `--no-plugins` has no effect with Cursor Agent
+- For headless environments (no Cursor window), set the `CURSOR_API_KEY` environment variable
+- The binary is `cursor-agent`; override with `RALPH_CURSOR_AGENT_BINARY` env var
+
 ## Agent Rotation
 
 Agent rotation lets you cycle through different agent/model combinations across iterations. This is useful for leveraging the strengths of different models or comparing their performance on a task.
@@ -701,7 +736,7 @@ Each rotation entry uses the `agent:model` format:
 --rotation "agent1:model1,agent2:model2,agent3:model3"
 ```
 
-**Valid agents:** `opencode`, `claude-code`, `codex`, `copilot`
+**Valid agents:** `opencode`, `claude-code`, `codex`, `copilot`, `cursor-agent`
 
 ### Example Usage
 
