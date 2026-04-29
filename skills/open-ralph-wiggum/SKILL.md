@@ -4,7 +4,7 @@ description: >
   Use this skill whenever a user wants to run, install, configure, or understand open-ralph-wiggum (ralph).
   This skill can be used by any AI assistant or IDE agent (GitHub Copilot, Claude Code, Cursor, Windsurf, etc.).
   Triggers on: "ralph", "ralph wiggum", "agentic loop", "iterative AI loop", "autonomous coding loop",
-  "how to install ralph", "how to use ralph with Claude Code / Codex / Copilot / OpenCode",
+  "how to install ralph", "how to use ralph with Claude Code / Codex / Copilot / Cursor Agent / OpenCode",
   "ralph --agent", "ralph --tasks", "ralph --status", "--max-iterations", "--rotation",
   "how do I run ralph in VS Code / Cursor / JetBrains / Neovim",
   or any question about looping an AI coding agent until a task is done.
@@ -16,7 +16,7 @@ description: >
 
 **Open Ralph Wiggum** (`ralph`) wraps any supported AI coding agent in an autonomous loop: it sends the same prompt on every iteration, and the agent self-corrects by observing the state of the repo. The loop ends when the agent outputs a configurable completion promise (e.g. `<promise>COMPLETE</promise>`).
 
-Supported agents: **Claude Code**, **OpenAI Codex**, **GitHub Copilot CLI**, **OpenCode** (default).
+Supported agents: **Claude Code**, **OpenAI Codex**, **GitHub Copilot CLI**, **Cursor Agent**, **OpenCode** (default).
 
 ---
 
@@ -29,6 +29,7 @@ Supported agents: **Claude Code**, **OpenAI Codex**, **GitHub Copilot CLI**, **O
   - `claude` — [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
   - `codex` — [OpenAI Codex CLI](https://github.com/openai/codex)
   - `copilot` — [GitHub Copilot CLI](https://github.com/github/copilot-cli)
+  - `cursor-agent` — [Cursor Agent CLI](https://cursor.com/cli/)
   - `opencode` — [OpenCode](https://opencode.ai)
 
 ### npm (recommended)
@@ -97,6 +98,15 @@ ralph "Implement login feature. Output <promise>COMPLETE</promise> when done." \
 
 Requires GitHub Copilot subscription and prior authentication (`copilot /login` or `GH_TOKEN` env var).
 
+### Cursor Agent
+
+```bash
+ralph "Add integration tests for the API. Output <promise>COMPLETE</promise> when done." \
+  --agent cursor-agent --max-iterations 15
+```
+
+Requires Cursor Agent CLI installed via `curl https://cursor.com/install -fsSL | bash`. For headless environments, set `CURSOR_API_KEY`.
+
 ---
 
 ## Checking Available Agents and Models
@@ -149,7 +159,7 @@ export GH_TOKEN=your_token
 ### Quick environment check (Linux/macOS)
 
 ```bash
-for bin in opencode claude codex copilot; do
+for bin in opencode claude codex copilot cursor-agent; do
   if command -v "$bin" &>/dev/null; then echo "✅ $bin: $(which $bin)"; else echo "❌ $bin: not found"; fi
 done && \
   [[ -n "$GH_TOKEN" ]] && echo "✅ GH_TOKEN set (Copilot CLI)" || echo "ℹ️  GH_TOKEN not set (needed only for Copilot CLI)"
@@ -161,10 +171,11 @@ done && \
 
 | Agent              | `--agent` flag        | Binary     | Env override            |
 | ------------------ | --------------------- | ---------- | ----------------------- |
-| OpenCode (default) | `--agent opencode`    | `opencode` | `RALPH_OPENCODE_BINARY` |
-| Claude Code        | `--agent claude-code` | `claude`   | `RALPH_CLAUDE_BINARY`   |
-| OpenAI Codex       | `--agent codex`       | `codex`    | `RALPH_CODEX_BINARY`    |
-| Copilot CLI        | `--agent copilot`     | `copilot`  | `RALPH_COPILOT_BINARY`  |
+| OpenCode (default) | `--agent opencode`      | `opencode`     | `RALPH_OPENCODE_BINARY`       |
+| Claude Code        | `--agent claude-code`   | `claude`       | `RALPH_CLAUDE_BINARY`         |
+| OpenAI Codex       | `--agent codex`         | `codex`        | `RALPH_CODEX_BINARY`          |
+| Copilot CLI        | `--agent copilot`       | `copilot`      | `RALPH_COPILOT_BINARY`        |
+| Cursor Agent       | `--agent cursor-agent`  | `cursor-agent` | `RALPH_CURSOR_AGENT_BINARY`   |
 
 Use environment variables to point to a custom binary path if the CLI is not on `$PATH`.
 
@@ -173,7 +184,7 @@ Use environment variables to point to a custom binary path if the CLI is not on 
 ## Key Options
 
 ```
---agent AGENT            Agent to use (opencode|claude-code|codex|copilot)
+--agent AGENT            Agent to use (opencode|claude-code|codex|copilot|cursor-agent)
 --model MODEL            Model name (agent-specific, e.g. claude-sonnet-4, gpt-5-codex)
 --max-iterations N       Stop after N iterations (always set this as a safety net)
 --min-iterations N       Require at least N iterations before allowing completion (default: 1)
@@ -243,6 +254,13 @@ Ralph is a terminal CLI tool that runs inside any IDE's integrated terminal.
 
    > Note: `--agent copilot` uses the standalone Copilot CLI, not the VS Code extension. Both can be active at the same time.
 
+   **Cursor Agent:**
+
+   ```bash
+   ralph "Your task. Output <promise>COMPLETE</promise> when done." \
+     --agent cursor-agent --max-iterations 20
+   ```
+
 3. Open a **second terminal tab** to monitor while the loop runs:
    ```bash
    ralph --status
@@ -286,6 +304,12 @@ Run ralph in a split terminal. Examples per agent:
 :split | terminal ralph "Your task. Output <promise>COMPLETE</promise> when done." --agent copilot --max-iterations 20
 ```
 
+**Cursor Agent:**
+
+```vim
+:split | terminal ralph "Your task. Output <promise>COMPLETE</promise> when done." --agent cursor-agent --max-iterations 20
+```
+
 Or use a plugin like `toggleterm.nvim` for a persistent terminal.
 
 ### Any IDE — Prompt File Workflow
@@ -314,6 +338,12 @@ ralph --prompt-file ./task.md --agent codex --model gpt-5-codex --max-iterations
 
 ```bash
 ralph --prompt-file ./task.md --agent copilot --max-iterations 30
+```
+
+**Cursor Agent:**
+
+```bash
+ralph --prompt-file ./task.md --agent cursor-agent --max-iterations 30
 ```
 
 ---
@@ -495,6 +525,32 @@ Notes:
 - Default model is Claude Sonnet 4.5; override with `--model`
 - `--no-plugins` has no effect with Copilot CLI
 - `--allow-all` (default) maps to `--allow-all` + `--no-ask-user` in Copilot CLI
+
+### Cursor Agent
+
+Install:
+
+```bash
+curl https://cursor.com/install -fsSL | bash
+```
+
+Usage:
+
+```bash
+ralph "Add integration tests for the API" \
+  --agent cursor-agent --max-iterations 10
+
+# With a specific model
+ralph "Refactor the database layer" \
+  --agent cursor-agent --model sonnet-4 --max-iterations 15
+```
+
+Notes:
+
+- `--allow-all` (default) maps to `--force` in Cursor Agent CLI
+- `--no-plugins` has no effect with Cursor Agent
+- For headless environments without a Cursor window, set `CURSOR_API_KEY` env var
+- Binary is `cursor-agent`; override with `RALPH_CURSOR_AGENT_BINARY`
 
 ---
 

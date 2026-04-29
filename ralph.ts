@@ -28,7 +28,7 @@ const questionsPath = join(stateDir, "ralph-questions.json");
 let customConfigPath = "";
 let initConfigPath = "";
 
-const AGENT_TYPES = ["opencode", "claude-code", "codex", "copilot"] as const;
+const AGENT_TYPES = ["opencode", "claude-code", "codex", "copilot", "cursor-agent"] as const;
 type AgentType = (typeof AGENT_TYPES)[number];
 
 type AgentEnvOptions = { filterPlugins?: boolean; allowAllPermissions?: boolean };
@@ -73,6 +73,20 @@ const PARSE_PATTERNS: Record<string, (line: string) => string | null> = {
       const nameMatch = cleanLine.match(/"name"\s*:\s*"([^"]+)"/);
       if (nameMatch) return nameMatch[1];
     }
+    return null;
+  },
+  "cursor-agent": (line) => {
+    const cleanLine = stripAnsi(line).trim();
+    if (!cleanLine.startsWith("{")) return null;
+    try {
+      const payload = JSON.parse(cleanLine);
+      if (payload?.type === "tool_call" && payload?.subtype === "started") {
+        const tc = payload.tool_call;
+        if (!tc || typeof tc !== "object") return null;
+        const toolKey = Object.keys(tc).find((k: string) => k.endsWith("ToolCall"));
+        if (toolKey) return toolKey.replace("ToolCall", "");
+      }
+    } catch {}
     return null;
   },
   "codex": null,
@@ -120,6 +134,15 @@ const ARGS_TEMPLATES: Record<string, (prompt: string, model: string, options?: A
     if (model) cmdArgs.push("--model", model);
     if (options?.allowAllPermissions) cmdArgs.push("--allow-all", "--no-ask-user");
     if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
+    return cmdArgs;
+  },
+  "cursor-agent": (prompt, model, options) => {
+    const cmdArgs = ["-p"];
+    if (options?.streamOutput) cmdArgs.push("--output-format", "stream-json", "--stream-partial-output");
+    if (model) cmdArgs.push("--model", model);
+    if (options?.allowAllPermissions) cmdArgs.push("--force");
+    if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
+    cmdArgs.push(prompt);
     return cmdArgs;
   },
   "default": (prompt, model, options) => {
@@ -189,6 +212,7 @@ function getDefaultConfig(): RalphConfig {
       { type: "claude-code", command: "claude", configName: "Claude Code", argsTemplate: "claude-code", envTemplate: "default", parsePattern: "claude-code" },
       { type: "codex", command: "codex", configName: "Codex", argsTemplate: "codex", envTemplate: "default", parsePattern: "codex" },
       { type: "copilot", command: "copilot", configName: "Copilot CLI", argsTemplate: "copilot", envTemplate: "default", parsePattern: "copilot" },
+      { type: "cursor-agent", command: "cursor-agent", configName: "Cursor Agent", argsTemplate: "cursor-agent", envTemplate: "default", parsePattern: "cursor-agent" },
     ],
   };
 }
@@ -247,6 +271,14 @@ const BUILT_IN_AGENTS: Record<AgentType, AgentConfig> = {
     parseToolOutput: PARSE_PATTERNS["copilot"],
     configName: "Copilot CLI",
   },
+  "cursor-agent": {
+    type: "cursor-agent",
+    command: resolveCommand("cursor-agent", process.env.RALPH_CURSOR_AGENT_BINARY),
+    buildArgs: ARGS_TEMPLATES["cursor-agent"],
+    buildEnv: ENV_TEMPLATES["default"],
+    parseToolOutput: PARSE_PATTERNS["cursor-agent"],
+    configName: "Cursor Agent",
+  },
 };
 
 // Parse arguments early for --config and --init-config handling
@@ -298,7 +330,7 @@ Arguments:
   prompt              Task description for the AI to work on
 
 Options:
-  --agent AGENT       AI agent to use: opencode (default), claude-code, codex, copilot
+  --agent AGENT       AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent
   --min-iterations N  Minimum iterations before completion allowed (default: 1)
   --max-iterations N  Maximum iterations before stopping (default: unlimited)
   --completion-promise TEXT  Phrase that signals completion (default: COMPLETE)
@@ -308,7 +340,7 @@ Options:
   --model MODEL       Model to use (agent-specific, e.g., anthropic/claude-sonnet)
   --rotation LIST     Agent/model rotation for each iteration (comma-separated)
                       Each entry must be "agent:model" format
-                      Valid agents: opencode, claude-code, codex
+                      Valid agents: opencode, claude-code, codex, copilot, cursor-agent
                       Example: --rotation "opencode:claude-sonnet-4,claude-code:gpt-4o"
                       When used, --agent and --model are ignored
   --prompt-file, --file, -f  Read prompt content from a file
@@ -1569,6 +1601,82 @@ function extractClaudeStreamDisplayLines(rawLine: string): string[] {
   return lines;
 }
 
+function extractCursorAgentStreamDisplayLines(rawLine: string): string[] {
+  const cleanLine = stripAnsi(rawLine).trim();
+  if (!cleanLine.startsWith("{")) {
+    return [rawLine];
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(cleanLine);
+  } catch {
+    return [rawLine];
+  }
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const lines: string[] = [];
+  const addText = (value: unknown) => {
+    if (typeof value !== "string") return;
+    for (const splitLine of value.split(/\r?\n/)) {
+      const trimmed = splitLine.trim();
+      if (trimmed) lines.push(trimmed);
+    }
+  };
+
+  const p = payload as Record<string, unknown>;
+  const payloadType = typeof p.type === "string" ? p.type : "";
+
+  if (payloadType === "assistant") {
+    if (p.message && typeof p.message === "object") {
+      const msg = p.message as Record<string, unknown>;
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block && typeof block === "object") {
+            addText((block as Record<string, unknown>).text);
+          }
+        }
+      }
+    }
+  } else if (payloadType === "tool_call") {
+    const tc = p.tool_call as Record<string, unknown> | undefined;
+    if (tc && typeof tc === "object") {
+      const toolKey = Object.keys(tc).find((k: string) => k.endsWith("ToolCall"));
+      if (toolKey) {
+        const toolName = toolKey.replace("ToolCall", "");
+        const toolData = tc[toolKey] as Record<string, unknown> | undefined;
+        if (p.subtype === "started" && toolData?.args && typeof toolData.args === "object") {
+          const args = toolData.args as Record<string, unknown>;
+          if (toolName === "shell" && typeof args.command === "string") {
+            lines.push(`[SHELL] ${args.command}`);
+          } else if (typeof args.path === "string") {
+            lines.push(`[${toolName.toUpperCase()}] ${args.path}`);
+          } else if (typeof args.pattern === "string") {
+            lines.push(`[${toolName.toUpperCase()}] ${args.pattern}`);
+          } else {
+            lines.push(`[${toolName.toUpperCase()}]`);
+          }
+        }
+      }
+    }
+  } else if (payloadType === "result") {
+    addText(p.result);
+    if (p.subtype && typeof p.subtype === "string") {
+      lines.push(`[RESULT] ${p.subtype}`);
+    }
+  } else if (payloadType === "error") {
+    if (p.error && typeof p.error === "object") {
+      addText((p.error as Record<string, unknown>).message);
+    } else {
+      addText(p.error);
+    }
+  }
+
+  return lines;
+}
+
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(totalSeconds / 3600);
@@ -1670,7 +1778,11 @@ async function streamProcessOutput(
   const handleLine = (line: string, isError: boolean) => {
     lastActivityAt = Date.now();
     const tool = parseToolOutput(line);
-    const outputLines = options.agent.type === "claude-code" ? extractClaudeStreamDisplayLines(line) : [line];
+    const outputLines = options.agent.type === "claude-code"
+      ? extractClaudeStreamDisplayLines(line)
+      : options.agent.type === "cursor-agent"
+      ? extractCursorAgentStreamDisplayLines(line)
+      : [line];
     if (tool) {
       toolCounts.set(tool, (toolCounts.get(tool) ?? 0) + 1);
       if (compactTools && outputLines.length === 0) {
@@ -1944,6 +2056,9 @@ async function runRalphLoop(): Promise<void> {
   if (disablePlugins && agentConfig.type === "copilot") {
     console.warn("Warning: --no-plugins has no effect with Copilot CLI agent");
   }
+  if (disablePlugins && agentConfig.type === "cursor-agent") {
+    console.warn("Warning: --no-plugins has no effect with Cursor Agent");
+  }
 
   console.log(`
 ╔══════════════════════════════════════════════════════════════════╗
@@ -2184,12 +2299,17 @@ async function runRalphLoop(): Promise<void> {
 
       const combinedOutput = `${result}\n${stderr}`;
 
-      // For Claude Code, extract display text from JSON stream before checking completion
+      // For agents using stream-json, extract display text before checking completion
       let completionCheckText = result;
-      if (agentConfig.type === "claude-code") {
+      const extractStreamLines = agentConfig.type === "claude-code"
+        ? extractClaudeStreamDisplayLines
+        : agentConfig.type === "cursor-agent"
+        ? extractCursorAgentStreamDisplayLines
+        : null;
+      if (extractStreamLines) {
         const displayLines: string[] = [];
         for (const rawLine of result.split(/\r?\n/)) {
-          for (const dl of extractClaudeStreamDisplayLines(rawLine)) {
+          for (const dl of extractStreamLines(rawLine)) {
             if (dl.trim()) displayLines.push(dl.trim());
           }
         }
