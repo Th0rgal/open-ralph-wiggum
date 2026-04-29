@@ -9,7 +9,14 @@
 import { $ } from "bun";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "fs";
 import { join } from "path";
-import { checkTerminalPromise, stripAnsi, tasksMarkdownAllComplete } from "./completion";
+import {
+  checkTerminalPromise,
+  extractAgentCompletionText,
+  extractClaudeStreamDisplayLines,
+  extractCursorAgentStreamDisplayLines,
+  stripAnsi,
+  tasksMarkdownAllComplete,
+} from "./completion";
 
 const VERSION = "1.2.2";
 
@@ -196,7 +203,7 @@ function createAgentConfig(json: JsonAgentConfig): AgentConfig {
 
   return {
     type: json.type,
-    command: resolveCommand(json.command, process.env[`RALPH_${json.type.toUpperCase()}_BINARY`]),
+    command: resolveCommand(json.command, process.env[getAgentBinaryEnvName(json.type)]),
     buildArgs: ARGS_TEMPLATES[argsTemplate] || ARGS_TEMPLATES["default"],
     buildEnv: ENV_TEMPLATES[envTemplate] || ENV_TEMPLATES["default"],
     parseToolOutput: PARSE_PATTERNS[parsePattern] || PARSE_PATTERNS["default"],
@@ -217,20 +224,19 @@ function getDefaultConfig(): RalphConfig {
   };
 }
 
+function getAgentBinaryEnvName(agentType: string): string {
+  return `RALPH_${agentType.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_BINARY`;
+}
+
 /**
  * Resolve a command for cross-platform compatibility.
  * On Windows, many npm-installed CLIs require the .cmd extension.
  */
 function resolveCommand(cmd: string, envOverride?: string): string {
   if (envOverride) return envOverride;
-  // On Windows, try the .cmd version first if the base command isn't found
-  if (IS_WINDOWS) {
-    const cmdPath = Bun.which(cmd);
-    if (!cmdPath) {
-      const cmdWithExt = `${cmd}.cmd`;
-      const cmdExtPath = Bun.which(cmdWithExt);
-      if (cmdExtPath) return cmdWithExt;
-    }
+  if (IS_WINDOWS && !/[\\/]/.test(cmd) && !/\.(cmd|exe|bat)$/i.test(cmd)) {
+    const cmdWithExt = `${cmd}.cmd`;
+    if (Bun.which(cmdWithExt)) return cmdWithExt;
   }
   return cmd;
 }
@@ -1532,151 +1538,6 @@ function detectModelNotFoundError(output: string): boolean {
          output.includes("No model configured");
 }
 
-function extractClaudeStreamDisplayLines(rawLine: string): string[] {
-  const cleanLine = stripAnsi(rawLine).trim();
-  if (!cleanLine.startsWith("{")) {
-    return [rawLine];
-  }
-
-  let payload: unknown;
-  try {
-    payload = JSON.parse(cleanLine);
-  } catch {
-    return [rawLine];
-  }
-  if (!payload || typeof payload !== "object") {
-    return [];
-  }
-
-  const lines: string[] = [];
-  const addText = (value: unknown) => {
-    if (typeof value !== "string") return;
-    for (const splitLine of value.split(/\r?\n/)) {
-      const trimmed = splitLine.trim();
-      if (trimmed) lines.push(trimmed);
-    }
-  };
-  const addContentText = (content: unknown) => {
-    if (typeof content === "string") {
-      addText(content);
-      return;
-    }
-    if (!Array.isArray(content)) return;
-    for (const block of content) {
-      if (!block || typeof block !== "object") continue;
-      const blockRecord = block as Record<string, unknown>;
-      if (blockRecord.type === "tool_use") continue;
-      addText(blockRecord.text);
-      addText(blockRecord.thinking);
-      if (typeof blockRecord.content === "string") {
-        addText(blockRecord.content);
-      }
-    }
-  };
-
-  const payloadRecord = payload as Record<string, unknown>;
-  const payloadType = typeof payloadRecord.type === "string" ? payloadRecord.type : "";
-  if (payloadType === "assistant") {
-    if (payloadRecord.message && typeof payloadRecord.message === "object") {
-      const message = payloadRecord.message as Record<string, unknown>;
-      addContentText(message.content);
-    }
-    if (payloadRecord.delta && typeof payloadRecord.delta === "object") {
-      const delta = payloadRecord.delta as Record<string, unknown>;
-      addText(delta.text);
-      addText(delta.thinking);
-      addText(delta.content);
-    }
-  } else if (payloadType === "result") {
-    addText(payloadRecord.result);
-  } else if (payloadType === "error") {
-    if (payloadRecord.error && typeof payloadRecord.error === "object") {
-      const error = payloadRecord.error as Record<string, unknown>;
-      addText(error.message);
-    } else {
-      addText(payloadRecord.error);
-    }
-  }
-
-  return lines;
-}
-
-function extractCursorAgentStreamDisplayLines(rawLine: string): string[] {
-  const cleanLine = stripAnsi(rawLine).trim();
-  if (!cleanLine.startsWith("{")) {
-    return [rawLine];
-  }
-
-  let payload: unknown;
-  try {
-    payload = JSON.parse(cleanLine);
-  } catch {
-    return [rawLine];
-  }
-  if (!payload || typeof payload !== "object") {
-    return [];
-  }
-
-  const lines: string[] = [];
-  const addText = (value: unknown) => {
-    if (typeof value !== "string") return;
-    for (const splitLine of value.split(/\r?\n/)) {
-      const trimmed = splitLine.trim();
-      if (trimmed) lines.push(trimmed);
-    }
-  };
-
-  const p = payload as Record<string, unknown>;
-  const payloadType = typeof p.type === "string" ? p.type : "";
-
-  if (payloadType === "assistant") {
-    if (p.message && typeof p.message === "object") {
-      const msg = p.message as Record<string, unknown>;
-      if (Array.isArray(msg.content)) {
-        for (const block of msg.content) {
-          if (block && typeof block === "object") {
-            addText((block as Record<string, unknown>).text);
-          }
-        }
-      }
-    }
-  } else if (payloadType === "tool_call") {
-    const tc = p.tool_call as Record<string, unknown> | undefined;
-    if (tc && typeof tc === "object") {
-      const toolKey = Object.keys(tc).find((k: string) => k.endsWith("ToolCall"));
-      if (toolKey) {
-        const toolName = toolKey.replace("ToolCall", "");
-        const toolData = tc[toolKey] as Record<string, unknown> | undefined;
-        if (p.subtype === "started" && toolData?.args && typeof toolData.args === "object") {
-          const args = toolData.args as Record<string, unknown>;
-          if (toolName === "shell" && typeof args.command === "string") {
-            lines.push(`[SHELL] ${args.command}`);
-          } else if (typeof args.path === "string") {
-            lines.push(`[${toolName.toUpperCase()}] ${args.path}`);
-          } else if (typeof args.pattern === "string") {
-            lines.push(`[${toolName.toUpperCase()}] ${args.pattern}`);
-          } else {
-            lines.push(`[${toolName.toUpperCase()}]`);
-          }
-        }
-      }
-    }
-  } else if (payloadType === "result") {
-    addText(p.result);
-    if (p.subtype && typeof p.subtype === "string") {
-      lines.push(`[RESULT] ${p.subtype}`);
-    }
-  } else if (payloadType === "error") {
-    if (p.error && typeof p.error === "object") {
-      addText((p.error as Record<string, unknown>).message);
-    } else {
-      addText(p.error);
-    }
-  }
-
-  return lines;
-}
-
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(totalSeconds / 3600);
@@ -2241,8 +2102,7 @@ async function runRalphLoop(): Promise<void> {
 
       // Run agent using spawn for better argument handling
       // stdin is inherited so users can respond to permission prompts if needed
-      const command = process.platform === "win32" && agentConfig.command === "opencode"? "opencode.cmd": agentConfig.command;
-      currentProc = Bun.spawn([command, ...cmdArgs], {
+      currentProc = Bun.spawn([agentConfig.command, ...cmdArgs], {
         cwd: process.cwd(),
         env,
         stdin: "inherit",
@@ -2300,21 +2160,7 @@ async function runRalphLoop(): Promise<void> {
       const combinedOutput = `${result}\n${stderr}`;
 
       // For agents using stream-json, extract display text before checking completion
-      let completionCheckText = result;
-      const extractStreamLines = agentConfig.type === "claude-code"
-        ? extractClaudeStreamDisplayLines
-        : agentConfig.type === "cursor-agent"
-        ? extractCursorAgentStreamDisplayLines
-        : null;
-      if (extractStreamLines) {
-        const displayLines: string[] = [];
-        for (const rawLine of result.split(/\r?\n/)) {
-          for (const dl of extractStreamLines(rawLine)) {
-            if (dl.trim()) displayLines.push(dl.trim());
-          }
-        }
-        completionCheckText = displayLines.join("\n");
-      }
+      const completionCheckText = extractAgentCompletionText(result, agentConfig.type);
 
       const completionSignalDetected = checkCompletion(completionCheckText, completionPromise);
       const abortDetected = abortPromise ? checkCompletion(completionCheckText, abortPromise) : false;
