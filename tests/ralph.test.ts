@@ -1,5 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import { checkTerminalPromise, getLastNonEmptyLine, tasksMarkdownAllComplete } from "../completion";
+import {
+  checkTerminalPromise,
+  extractAgentCompletionText,
+  extractClaudeStreamDisplayLines,
+  extractCursorAgentStreamDisplayLines,
+  getLastNonEmptyLine,
+  tasksMarkdownAllComplete,
+} from "../completion";
 
 describe("checkTerminalPromise", () => {
   it("detects completion when promise tag is the final non-empty line", () => {
@@ -69,5 +76,54 @@ describe("tasksMarkdownAllComplete", () => {
     ].join("\n");
 
     expect(tasksMarkdownAllComplete(markdown)).toBe(true);
+  });
+});
+
+describe("agent stream output extraction", () => {
+  it("extracts Claude Code assistant text from JSON stream lines", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "done\n<promise>COMPLETE</promise>" }],
+      },
+    });
+
+    expect(extractClaudeStreamDisplayLines(line)).toEqual(["done", "<promise>COMPLETE</promise>"]);
+  });
+
+  it("uses extracted Claude Code text for completion detection", () => {
+    const output = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "Implemented changes." }],
+        },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "<promise>COMPLETE</promise>" }],
+        },
+      }),
+    ].join("\n");
+
+    expect(checkTerminalPromise(output, "COMPLETE")).toBe(false);
+    expect(checkTerminalPromise(extractAgentCompletionText(output, "claude-code"), "COMPLETE")).toBe(true);
+  });
+
+  it("extracts Cursor Agent assistant text from JSON stream lines", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "ready\n<promise>COMPLETE</promise>" }],
+      },
+    });
+
+    expect(extractCursorAgentStreamDisplayLines(line)).toEqual(["ready", "<promise>COMPLETE</promise>"]);
+  });
+
+  it("leaves non-streaming agents unchanged for completion detection", () => {
+    const output = "Finished\n<promise>COMPLETE</promise>";
+    expect(extractAgentCompletionText(output, "opencode")).toBe(output);
   });
 });
