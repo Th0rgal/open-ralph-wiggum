@@ -11,6 +11,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "fs
 import { join } from "path";
 import {
   checkTerminalPromise,
+  containsPromiseTag,
   extractAgentCompletionText,
   extractClaudeStreamDisplayLines,
   extractCursorAgentStreamDisplayLines,
@@ -1516,10 +1517,15 @@ Unable to read .ralph/ralph-tasks.md
 }
 
 /**
- * Check if output contains a completion promise as the final non-empty line.
+ * Check if output contains a completion promise.
+ * First checks if the promise tag is the final non-empty line (strict mode).
+ * Falls back to a full-text search of the raw output for stream-json agents
+ * where the promise may appear inside JSON values rather than as a standalone line.
  */
-function checkCompletion(output: string, promise: string): boolean {
-  return checkTerminalPromise(output, promise);
+function checkCompletion(output: string, promise: string, rawOutput?: string): boolean {
+  if (checkTerminalPromise(output, promise)) return true;
+  if (rawOutput && containsPromiseTag(rawOutput, promise)) return true;
+  return false;
 }
 
 function detectPlaceholderPluginError(output: string): boolean {
@@ -2162,9 +2168,9 @@ async function runRalphLoop(): Promise<void> {
       // For agents using stream-json, extract display text before checking completion
       const completionCheckText = extractAgentCompletionText(result, agentConfig.type);
 
-      const completionSignalDetected = checkCompletion(completionCheckText, completionPromise);
-      const abortDetected = abortPromise ? checkCompletion(completionCheckText, abortPromise) : false;
-      const taskCompletionDetected = tasksMode ? checkCompletion(completionCheckText, taskPromise) : false;
+      const completionSignalDetected = checkCompletion(completionCheckText, completionPromise, result);
+      const abortDetected = abortPromise ? checkCompletion(completionCheckText, abortPromise, result) : false;
+      const taskCompletionDetected = tasksMode ? checkCompletion(completionCheckText, taskPromise, result) : false;
 
       let completionDetected = completionSignalDetected;
       if (tasksMode && completionSignalDetected) {
