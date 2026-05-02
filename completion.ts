@@ -2,7 +2,7 @@
  * Completion detection helpers used by the Ralph loop.
  */
 
-const ANSI_PATTERN = /\u001b\[[0-9;]*m/g;
+const ANSI_PATTERN = /\[[0-9;]*m/g;
 
 export function stripAnsi(input: string): string {
   return input.replace(ANSI_PATTERN, "");
@@ -35,6 +35,17 @@ export function checkTerminalPromise(output: string, promise: string): boolean {
   const escapedPromise = escapeRegex(promise);
   const pattern = new RegExp(`^<promise>\\s*${escapedPromise}\\s*</promise>$`, "i");
   return pattern.test(lastLine);
+}
+
+/**
+ * Searches the entire output for the promise tag on its own line.
+ * This is a fallback for stream-json mode where the promise tag may appear
+ * inside JSON values and not as the final non-empty line of the raw output.
+ */
+export function containsPromiseTag(output: string, promise: string): boolean {
+  const escapedPromise = escapeRegex(promise);
+  const pattern = new RegExp(`<promise>\\s*${escapedPromise}\\s*</promise>`, "i");
+  return pattern.test(stripAnsi(output));
 }
 
 /**
@@ -112,6 +123,16 @@ export function extractClaudeStreamDisplayLines(rawLine: string): string[] {
       addNonEmptyTextLines(lines, delta.text);
       addNonEmptyTextLines(lines, delta.thinking);
       addNonEmptyTextLines(lines, delta.content);
+    }
+  } else if (payloadType === "stream_event") {
+    if (payloadRecord.event && typeof payloadRecord.event === "object") {
+      const event = payloadRecord.event as Record<string, unknown>;
+      if (event.delta && typeof event.delta === "object") {
+        const delta = event.delta as Record<string, unknown>;
+        if (delta.type === "text_delta" && typeof delta.text === "string") {
+          addNonEmptyTextLines(lines, delta.text);
+        }
+      }
     }
   } else if (payloadType === "result") {
     addNonEmptyTextLines(lines, payloadRecord.result);
