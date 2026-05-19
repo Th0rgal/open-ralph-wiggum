@@ -1,0 +1,13 @@
+{
+  "version": "1.0",
+  "agents": [
+    {
+      "type": "codex",
+      "command": "omx-codex-exec-for-ralph",
+      "configName": "OMX Codex Exec",
+      "argsTemplate": "codex",
+      "envTemplate": "default",
+      "parsePattern": "codex"
+    }
+  ]
+}
