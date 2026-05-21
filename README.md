@@ -47,6 +47,7 @@ Open Ralph Wiggum works with multiple AI coding agents. Switch between them usin
 | **Codex** | `--agent codex` | OpenAI's Codex CLI for AI-powered development |
 | **Copilot CLI** | `--agent copilot` | GitHub Copilot CLI for agentic coding |
 | **Cursor Agent** | `--agent cursor-agent` | Cursor Agent CLI for headless AI coding |
+| **Qwen Code** | `--agent qwen-code` | Alibaba's Qwen Code CLI for headless AI coding |
 | **OpenCode** | `--agent opencode` | Default agent, open-source AI coding assistant |
 
 ```bash
@@ -61,6 +62,9 @@ ralph "Refactor the auth module" --agent copilot --max-iterations 10
 
 # Use Cursor Agent
 ralph "Add unit tests" --agent cursor-agent --max-iterations 10
+
+# Use Qwen Code
+ralph "Add unit tests" --agent qwen-code --max-iterations 10
 
 # Use OpenCode (default)
 ralph "Fix the failing tests" --max-iterations 10
@@ -91,6 +95,7 @@ Switch between AI coding agents without changing your workflow:
 - **Codex** (`--agent codex`) — OpenAI's code-specialized model
 - **Copilot CLI** (`--agent copilot`) — GitHub's agentic coding tool
 - **Cursor Agent** (`--agent cursor-agent`) — Cursor's headless AI coding agent
+- **Qwen Code** (`--agent qwen-code`) — Alibaba's Qwen Code headless CLI agent
 - **OpenCode** (`--agent opencode`) — Open-source default option
 
 ## Key Features
@@ -192,6 +197,7 @@ Configure agent binaries with these environment variables:
 | `RALPH_CODEX_BINARY` | Path to Codex CLI | `"codex"` |
 | `RALPH_COPILOT_BINARY` | Path to Copilot CLI | `"copilot"` |
 | `RALPH_CURSOR_AGENT_BINARY` | Path to Cursor Agent CLI | `"cursor-agent"` |
+| `RALPH_QWEN_CODE_BINARY` | Path to Qwen Code CLI | `"qwen-code"` |
 
 **Note for Windows users:** Ralph automatically resolves `.cmd` extensions for npm-installed CLIs. If you encounter "command not found" errors, you can use these environment variables to specify the full path to the executable.
 
@@ -203,7 +209,7 @@ Configure agent binaries with these environment variables:
 ralph "<prompt>" [options]
 
 Options:
-  --agent AGENT            AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent
+  --agent AGENT            AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent, qwen-code
   --min-iterations N       Minimum iterations before completion allowed (default: 1)
   --max-iterations N       Stop after N iterations (default: unlimited)
   --completion-promise T   Text that signals completion (default: COMPLETE)
@@ -696,6 +702,33 @@ ralph "Build a REST API" \
 - `--no-plugins` has no effect with Copilot CLI
 - Authentication: set `GH_TOKEN` / `GITHUB_TOKEN` env var, or run `copilot /login` first
 
+### Qwen Code
+
+[Qwen Code](https://github.com/QwenLM/qwen-code) is Alibaba's headless AI coding CLI agent based on the Qwen model family. It uses the same stream-JSON output format as Claude Code.
+
+**Install:**
+```bash
+npm install -g @qwen-code/qwen-code
+```
+
+**Usage:**
+```bash
+ralph "Refactor the database layer" \
+  --agent qwen-code \
+  --max-iterations 10
+
+# With a specific model
+ralph "Add integration tests for the API" \
+  --agent qwen-code \
+  --model qwen-coder-plus \
+  --max-iterations 15
+```
+
+**Notes:**
+- `--allow-all` (default) maps to `--dangerously-skip-permissions` in Qwen Code CLI
+- `--no-plugins` has no effect with Qwen Code
+- Override the binary path with `RALPH_QWEN_CODE_BINARY` env var
+
 ### Cursor Agent
 
 [Cursor Agent](https://cursor.com/cli/) is Cursor's headless CLI agent. It works with any model available through your Cursor subscription.
@@ -736,7 +769,7 @@ Each rotation entry uses the `agent:model` format:
 --rotation "agent1:model1,agent2:model2,agent3:model3"
 ```
 
-**Valid agents:** `opencode`, `claude-code`, `codex`, `copilot`, `cursor-agent`
+**Valid agents:** `opencode`, `claude-code`, `codex`, `copilot`, `cursor-agent`, `qwen-code`
 
 ### Example Usage
 
@@ -776,7 +809,7 @@ Invalid rotation entries produce clear error messages:
 
 **Invalid agent name:**
 ```
-Error: Invalid agent 'invalid' in rotation entry 'invalid:model'. Valid agents: opencode, claude-code, codex, copilot
+Error: Invalid agent 'invalid' in rotation entry 'invalid:model'. Valid agents: opencode, claude-code, codex, copilot, cursor-agent, qwen-code
 ```
 
 **Malformed entry (missing colon):**

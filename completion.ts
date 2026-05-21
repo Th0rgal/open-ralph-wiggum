@@ -217,7 +217,7 @@ export function extractCursorAgentStreamDisplayLines(rawLine: string): string[] 
 }
 
 export function extractAgentCompletionText(output: string, agentType: string): string {
-  const extractStreamLines = agentType === "claude-code"
+  const extractStreamLines = agentType === "claude-code" || agentType === "qwen-code"
     ? extractClaudeStreamDisplayLines
     : agentType === "cursor-agent"
     ? extractCursorAgentStreamDisplayLines

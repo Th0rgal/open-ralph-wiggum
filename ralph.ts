@@ -36,7 +36,7 @@ const questionsPath = join(stateDir, "ralph-questions.json");
 let customConfigPath = "";
 let initConfigPath = "";
 
-const AGENT_TYPES = ["opencode", "claude-code", "codex", "copilot", "cursor-agent"] as const;
+const AGENT_TYPES = ["opencode", "claude-code", "codex", "copilot", "cursor-agent", "qwen-code"] as const;
 type AgentType = (typeof AGENT_TYPES)[number];
 
 type AgentEnvOptions = { filterPlugins?: boolean; allowAllPermissions?: boolean };
@@ -97,6 +97,16 @@ const PARSE_PATTERNS: Record<string, (line: string) => string | null> = {
     } catch {}
     return null;
   },
+  "qwen-code": (line) => {
+    const cleanLine = stripAnsi(line);
+    const match = cleanLine.match(/(?:Using|Called|Tool:)\s+([A-Za-z0-9_.-]+)/i);
+    if (match) return match[1];
+    if (/"type"\s*:\s*"tool_use"/.test(cleanLine)) {
+      const nameMatch = cleanLine.match(/"name"\s*:\s*"([^"]+)"/);
+      if (nameMatch) return nameMatch[1];
+    }
+    return null;
+  },
   "codex": null,
   "copilot": null,
   "default": (line) => {
@@ -151,6 +161,14 @@ const ARGS_TEMPLATES: Record<string, (prompt: string, model: string, options?: A
     if (options?.allowAllPermissions) cmdArgs.push("--force");
     if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
     cmdArgs.push(prompt);
+    return cmdArgs;
+  },
+  "qwen-code": (prompt, model, options) => {
+    const cmdArgs = ["-p", prompt];
+    if (options?.streamOutput) cmdArgs.push("--output-format", "stream-json", "--include-partial-messages", "--verbose");
+    if (model) cmdArgs.push("--model", model);
+    if (options?.allowAllPermissions) cmdArgs.push("--dangerously-skip-permissions");
+    if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
     return cmdArgs;
   },
   "default": (prompt, model, options) => {
@@ -221,6 +239,7 @@ function getDefaultConfig(): RalphConfig {
       { type: "codex", command: "codex", configName: "Codex", argsTemplate: "codex", envTemplate: "default", parsePattern: "codex" },
       { type: "copilot", command: "copilot", configName: "Copilot CLI", argsTemplate: "copilot", envTemplate: "default", parsePattern: "copilot" },
       { type: "cursor-agent", command: "cursor-agent", configName: "Cursor Agent", argsTemplate: "cursor-agent", envTemplate: "default", parsePattern: "cursor-agent" },
+      { type: "qwen-code", command: "qwen-code", configName: "Qwen Code", argsTemplate: "qwen-code", envTemplate: "default", parsePattern: "qwen-code" },
     ],
   };
 }
@@ -286,6 +305,14 @@ const BUILT_IN_AGENTS: Record<AgentType, AgentConfig> = {
     parseToolOutput: PARSE_PATTERNS["cursor-agent"],
     configName: "Cursor Agent",
   },
+  "qwen-code": {
+    type: "qwen-code",
+    command: resolveCommand("qwen-code", process.env.RALPH_QWEN_CODE_BINARY),
+    buildArgs: ARGS_TEMPLATES["qwen-code"],
+    buildEnv: ENV_TEMPLATES["default"],
+    parseToolOutput: PARSE_PATTERNS["qwen-code"],
+    configName: "Qwen Code",
+  },
 };
 
 // Parse arguments early for --config and --init-config handling
@@ -337,7 +364,7 @@ Arguments:
   prompt              Task description for the AI to work on
 
 Options:
-  --agent AGENT       AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent
+  --agent AGENT       AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent, qwen-code
   --min-iterations N  Minimum iterations before completion allowed (default: 1)
   --max-iterations N  Maximum iterations before stopping (default: unlimited)
   --completion-promise TEXT  Phrase that signals completion (default: COMPLETE)
@@ -347,7 +374,7 @@ Options:
   --model MODEL       Model to use (agent-specific, e.g., anthropic/claude-sonnet)
   --rotation LIST     Agent/model rotation for each iteration (comma-separated)
                       Each entry must be "agent:model" format
-                      Valid agents: opencode, claude-code, codex, copilot, cursor-agent
+                      Valid agents: opencode, claude-code, codex, copilot, cursor-agent, qwen-code
                       Example: --rotation "opencode:claude-sonnet-4,claude-code:gpt-4o"
                       When used, --agent and --model are ignored
   --prompt-file, --file, -f  Read prompt content from a file
@@ -1645,7 +1672,7 @@ async function streamProcessOutput(
   const handleLine = (line: string, isError: boolean) => {
     lastActivityAt = Date.now();
     const tool = parseToolOutput(line);
-    const outputLines = options.agent.type === "claude-code"
+    const outputLines = options.agent.type === "claude-code" || options.agent.type === "qwen-code"
       ? extractClaudeStreamDisplayLines(line)
       : options.agent.type === "cursor-agent"
       ? extractCursorAgentStreamDisplayLines(line)
@@ -1925,6 +1952,9 @@ async function runRalphLoop(): Promise<void> {
   }
   if (disablePlugins && agentConfig.type === "cursor-agent") {
     console.warn("Warning: --no-plugins has no effect with Cursor Agent");
+  }
+  if (disablePlugins && agentConfig.type === "qwen-code") {
+    console.warn("Warning: --no-plugins has no effect with Qwen Code agent");
   }
 
   console.log(`
