@@ -165,9 +165,9 @@ const ARGS_TEMPLATES: Record<string, (prompt: string, model: string, options?: A
   },
   "qwen-code": (prompt, model, options) => {
     const cmdArgs = ["-p", prompt];
-    if (options?.streamOutput) cmdArgs.push("--output-format", "stream-json", "--include-partial-messages", "--verbose");
+    if (options?.streamOutput) cmdArgs.push("--output-format", "stream-json", "--include-partial-messages");
     if (model) cmdArgs.push("--model", model);
-    if (options?.allowAllPermissions) cmdArgs.push("--dangerously-skip-permissions");
+    if (options?.allowAllPermissions) cmdArgs.push("--yolo");
     if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
     return cmdArgs;
   },
@@ -239,7 +239,7 @@ function getDefaultConfig(): RalphConfig {
       { type: "codex", command: "codex", configName: "Codex", argsTemplate: "codex", envTemplate: "default", parsePattern: "codex" },
       { type: "copilot", command: "copilot", configName: "Copilot CLI", argsTemplate: "copilot", envTemplate: "default", parsePattern: "copilot" },
       { type: "cursor-agent", command: "cursor-agent", configName: "Cursor Agent", argsTemplate: "cursor-agent", envTemplate: "default", parsePattern: "cursor-agent" },
-      { type: "qwen-code", command: "qwen-code", configName: "Qwen Code", argsTemplate: "qwen-code", envTemplate: "default", parsePattern: "qwen-code" },
+      { type: "qwen-code", command: "qwen", configName: "Qwen Code", argsTemplate: "qwen-code", envTemplate: "default", parsePattern: "qwen-code" },
     ],
   };
 }
@@ -307,7 +307,7 @@ const BUILT_IN_AGENTS: Record<AgentType, AgentConfig> = {
   },
   "qwen-code": {
     type: "qwen-code",
-    command: resolveCommand("qwen-code", process.env.RALPH_QWEN_CODE_BINARY),
+    command: resolveCommand("qwen", process.env.RALPH_QWEN_CODE_BINARY),
     buildArgs: ARGS_TEMPLATES["qwen-code"],
     buildEnv: ENV_TEMPLATES["default"],
     parseToolOutput: PARSE_PATTERNS["qwen-code"],

@@ -197,7 +197,7 @@ Configure agent binaries with these environment variables:
 | `RALPH_CODEX_BINARY` | Path to Codex CLI | `"codex"` |
 | `RALPH_COPILOT_BINARY` | Path to Copilot CLI | `"copilot"` |
 | `RALPH_CURSOR_AGENT_BINARY` | Path to Cursor Agent CLI | `"cursor-agent"` |
-| `RALPH_QWEN_CODE_BINARY` | Path to Qwen Code CLI | `"qwen-code"` |
+| `RALPH_QWEN_CODE_BINARY` | Path to Qwen Code CLI | `"qwen"` |
 
 **Note for Windows users:** Ralph automatically resolves `.cmd` extensions for npm-installed CLIs. If you encounter "command not found" errors, you can use these environment variables to specify the full path to the executable.
 
@@ -725,9 +725,11 @@ ralph "Add integration tests for the API" \
 ```
 
 **Notes:**
-- `--allow-all` (default) maps to `--dangerously-skip-permissions` in Qwen Code CLI
+- The CLI binary is `qwen`; override path with `RALPH_QWEN_CODE_BINARY` env var
+- `--allow-all` (default) maps to `--yolo` in Qwen Code CLI (auto-approves all actions)
 - `--no-plugins` has no effect with Qwen Code
-- Override the binary path with `RALPH_QWEN_CODE_BINARY` env var
+- Headless mode uses `--output-format stream-json --include-partial-messages`
+- See [headless docs](https://qwenlm.github.io/qwen-code-docs/en/users/features/headless/) for details
 
 ### Cursor Agent
 
