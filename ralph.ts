@@ -2303,8 +2303,12 @@ async function runRalphLoop(): Promise<void> {
         process.exit(1);
       }
 
-      // Detect model configuration errors (Issues #22, #23)
-      if (detectModelNotFoundError(combinedOutput)) {
+      // Detect model configuration errors (Issues #22, #23).
+      // Only treat these as agent configuration failures when the agent itself
+      // exits non-zero. A successful agent run may legitimately print project
+      // test output containing phrases like "model not found", and stopping the
+      // loop in that case hides the real task/test failure from the agent.
+      if (exitCode !== 0 && detectModelNotFoundError(combinedOutput)) {
         console.error("\n❌ Model configuration error detected.");
         console.error("   The agent could not find a valid model to use.");
         console.error("\n   To fix this:");
