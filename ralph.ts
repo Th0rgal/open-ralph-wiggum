@@ -19,7 +19,7 @@ import {
   tasksMarkdownAllComplete,
 } from "./completion";
 
-const VERSION = "1.3.0";
+const VERSION = "1.3.1";
 
 // Detect Windows platform for command resolution
 const IS_WINDOWS = process.platform === "win32";
