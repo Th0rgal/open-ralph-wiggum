@@ -206,4 +206,35 @@ describe("agent stream output extraction", () => {
     const output = "Finished\n<promise>COMPLETE</promise>";
     expect(extractAgentCompletionText(output, "opencode")).toBe(output);
   });
+
+  it("extracts Qwen Code assistant text using Claude stream format", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "done\n<promise>COMPLETE</promise>" }],
+      },
+    });
+
+    expect(extractClaudeStreamDisplayLines(line)).toEqual(["done", "<promise>COMPLETE</promise>"]);
+  });
+
+  it("uses extracted Qwen Code text for completion detection", () => {
+    const output = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "Implemented changes." }],
+        },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "<promise>COMPLETE</promise>" }],
+        },
+      }),
+    ].join("\n");
+
+    expect(checkTerminalPromise(output, "COMPLETE")).toBe(false);
+    expect(checkTerminalPromise(extractAgentCompletionText(output, "qwen-code"), "COMPLETE")).toBe(true);
+  });
 });
