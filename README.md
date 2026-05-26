@@ -180,7 +180,7 @@ ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise>
 
 # Use Codex goal mode through OMX: Ralph owns cross-iteration retries, /goal owns one iteration
 RALPH_CODEX_GOAL=1 RALPH_CODEX_BACKEND=omx \
-ralph "根据 .harness/goal.md 完成任务。全部通过后输出 <promise>COMPLETE</promise>。" \
+ralph "Complete the task described in .harness/goal.md. Output <promise>COMPLETE</promise> when everything passes." \
   --agent codex --max-iterations 5
 
 # Use Copilot CLI
@@ -233,6 +233,7 @@ Options:
   --completion-promise T   Text that signals completion (default: COMPLETE)
   --abort-promise TEXT     Phrase that signals early abort (e.g., precondition failed)
   --tasks, -t              Enable Tasks Mode for structured task tracking
+  --task-min-iterations N   Require each top-level task to receive N Ralph iterations before completion (default: 1)
   --task-promise T         Text that signals task completion (default: READY_FOR_NEXT_TASK)
   --model MODEL            Model to use (agent-specific)
   --rotation LIST          Agent/model rotation for each iteration (comma-separated)
@@ -257,7 +258,7 @@ Options:
 
 ```bash
 ralph \
-  "根据 .harness/goal.md 完成任务。运行 .harness/checks.sh。全部通过后输出 <promise>COMPLETE</promise>。" \
+  "Complete the task in .harness/goal.md. Run .harness/checks.sh. Output <promise>COMPLETE</promise> when everything passes." \
   --agent codex \
   --codex-goal \
   --codex-backend omx \
@@ -268,7 +269,7 @@ Equivalent environment form:
 
 ```bash
 RALPH_CODEX_GOAL=1 RALPH_CODEX_BACKEND=omx ralph \
-  "根据 .harness/goal.md 完成任务。运行 .harness/checks.sh。全部通过后输出 <promise>COMPLETE</promise>。" \
+  "Complete the task in .harness/goal.md. Run .harness/checks.sh. Output <promise>COMPLETE</promise> when everything passes." \
   --agent codex \
   --max-iterations 5
 ```
@@ -285,6 +286,9 @@ ralph "Build a complete web application" --tasks --max-iterations 20
 
 # Custom task completion signal
 ralph "Multi-feature project" --tasks --task-promise "TASK_DONE"
+
+# Require each top-level task to receive three Ralph iterations before task/final completion
+ralph "Multi-feature project" --tasks --task-min-iterations 3 --max-iterations 20
 ```
 
 #### Task Management Commands
@@ -307,9 +311,11 @@ ralph --status
 
 1. **Task File**: Tasks are stored in `.ralph/ralph-tasks.md`
 2. **One Task Per Iteration**: Ralph focuses on a single task to reduce confusion
-3. **Automatic Progression**: When a task completes (`<promise>READY_FOR_NEXT_TASK</promise>`), Ralph moves to the next
-4. **Persistent State**: Tasks survive loop restarts
-5. **Focused Context**: Smaller contexts per iteration reduce costs and improve reliability
+3. **Automatic Progression**: When a task completes (`<promise>READY_FOR_NEXT_TASK</promise>`), Ralph moves to the next eligible task
+4. **Task Minimum Iterations**: `--task-min-iterations N` requires every top-level task to receive N Ralph outer-loop iterations before task or final completion is accepted. This is separate from global `--min-iterations`, which gates the whole run.
+5. **Task Ledger Fallback**: With task minimums enabled, if the selected top-level task is already `[x]` with all subtasks `[x]` after its required iterations, Ralph advances from the task ledger even if the agent forgets to emit `READY_FOR_NEXT_TASK`
+6. **Persistent State**: Tasks survive loop restarts; per-task attempt counts are stored in `.ralph/ralph-task-runs.json` when task minimums are enabled
+7. **Focused Context**: Smaller contexts per iteration reduce costs and improve reliability
 
 Task status indicators:
 - `[ ]` - Not started
@@ -347,6 +353,13 @@ ralph "Build a REST API" --prompt-template ./my-template.md
 | `{{completion_promise}}` | Completion promise text (e.g., "COMPLETE") |
 | `{{abort_promise}}` | Abort promise text (if configured) |
 | `{{task_promise}}` | Task promise text (for tasks mode) |
+| `{{task_min_iterations}}` | Configured per-task minimum Ralph iterations (for tasks mode) |
+| `{{task_id}}` | Current selected top-level task id when task-min tracking is active |
+| `{{task_text}}` | Current selected top-level task text when task-min tracking is active |
+| `{{task_attempt}}` | Current selected task attempt count when task-min tracking is active |
+| `{{task_min_required}}` | Required attempts for the current selected task |
+| `{{task_can_complete}}` | `true` when the selected task has met its task minimum |
+| `{{task_gate_instruction}}` | Ready-to-embed task-min guidance for custom templates |
 | `{{context}}` | Additional context added mid-loop |
 | `{{tasks}}` | Task list content (for tasks mode) |
 

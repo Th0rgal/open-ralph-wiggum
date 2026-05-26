@@ -50,7 +50,7 @@ In this mode Open Ralph does **not** rely on a previous Codex thread for cross-i
 ```bash
 RALPH_CODEX_GOAL=1 RALPH_CODEX_BACKEND=omx \
 ralph \
-  "根据 .harness/goal.md 完成任务。运行 .harness/checks.sh。全部通过后输出 <promise>COMPLETE</promise>。" \
+  "Complete the task in .harness/goal.md. Run .harness/checks.sh. Output <promise>COMPLETE</promise> when everything passes." \
   --agent codex \
   --max-iterations 5
 ```
@@ -59,7 +59,7 @@ Or with flags only:
 
 ```bash
 ralph \
-  "根据 .harness/goal.md 完成任务。运行 .harness/checks.sh。全部通过后输出 <promise>COMPLETE</promise>。" \
+  "Complete the task in .harness/goal.md. Run .harness/checks.sh. Output <promise>COMPLETE</promise> when everything passes." \
   --agent codex \
   --codex-goal \
   --codex-backend omx \
@@ -68,9 +68,41 @@ ralph \
 
 Ralph logs whether native `/goal` is being attempted and records `promptStartsWithGoal:true` in `.ralph/codex-goal-ledger.jsonl`. OMX/Codex output is still checked for goal-state evidence; if it is not present, Ralph warns instead of silently claiming native confirmation.
 
+## Task Ledger minimum iterations
+
+Use `--task-min-iterations N` with `--tasks` when each top-level todo should receive repeated Ralph implementation/verification pressure. This is different from `--min-iterations`: global `--min-iterations` gates the whole run, while `--task-min-iterations` gates each task in `.ralph/ralph-tasks.md`.
+
+```bash
+ralph-omx \
+  --tasks \
+  --task-promise READY_FOR_NEXT_TASK \
+  --task-min-iterations 3 \
+  --codex-goal \
+  --codex-backend omx \
+  --min-iterations 3 \
+  --max-iterations 20 \
+  --completion-promise FEATURE_VERIFIED \
+  --prompt-file .omx/prompts/feature-ralph-omx.md
+```
+
+If a task is marked `[x]` before its minimum count is reached, Ralph keeps selecting that task for additional verification rounds instead of advancing. Custom prompt templates can embed the same gate using `{{task_gate_instruction}}` plus `{{task_attempt}}` / `{{task_min_required}}`.
+
+## Post-run cleanup gate for OMX handoffs
+
+For implementation-heavy Ralph/OMX runs, treat cleanup as a separate final quality gate after Ralph finishes rather than as part of the `ralph-omx` command itself:
+
+1. Run the targeted verification commands for the Ralph objective.
+2. Capture the files owned by the just-finished Ralph run from git status/diff and `.ralph/ralph-history.json`.
+3. Run an OMX cleanup pass such as `$ai-slop-cleaner` on those changed files only; if there are no relevant edits, record a passed/no-op cleanup report.
+4. Rerun verification after cleanup.
+5. For substantial code changes, run a final review pass and resolve blockers before claiming the handoff is done.
+
+Keep cleanup scoped to Ralph-owned changed files. Do not use a broad cleanup pass that can touch unrelated dirty work in the repository.
+
 ## Parameter guidance
 
-- `--min-iterations N`: minimum loop count before completion can stop the run.
+- `--min-iterations N`: minimum outer Ralph loop count before final completion can stop the whole run.
+- `--task-min-iterations N`: Tasks Mode only; each top-level `.ralph/ralph-tasks.md` item must receive N Ralph iterations before task/final completion is accepted. Per-task counts are stored in `.ralph/ralph-task-runs.json`.
 - `--max-iterations N`: safety cap for the Open Ralph loop.
 - `--completion-promise TEXT`: stop phrase/promise that must appear when the task is truly done.
 - `--prompt-file PATH`: long prompt file for copy-paste-safe commands.
