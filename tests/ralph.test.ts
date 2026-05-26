@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import {
   checkTerminalPromise,
   containsPromiseTag,
@@ -236,5 +239,68 @@ describe("agent stream output extraction", () => {
 
     expect(checkTerminalPromise(output, "COMPLETE")).toBe(false);
     expect(checkTerminalPromise(extractAgentCompletionText(output, "qwen-code"), "COMPLETE")).toBe(true);
+  });
+});
+
+describe("Codex goal mode invocation", () => {
+  it("sends /goal as the first token of the final OMX prompt", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "ralph-goal-invocation-test."));
+    const fakeBinDir = join(workdir, "bin");
+    const fakeOmx = join(fakeBinDir, "omx");
+    const fakeCodex = join(fakeBinDir, "codex");
+    const capturedArgs = join(workdir, "captured-args.txt");
+    const capturedPrompt = join(workdir, "captured-prompt.txt");
+    const rootDir = join(import.meta.dir, "..");
+
+    try {
+      await Bun.$`mkdir -p ${fakeBinDir}`;
+      writeFileSync(fakeCodex, "#!/usr/bin/env bash\necho fake codex\n");
+      chmodSync(fakeCodex, 0o755);
+      writeFileSync(fakeOmx, `#!/usr/bin/env bash
+printf '%s\\n' "$@" > "${capturedArgs}"
+printf '%s' "\${!#}" > "${capturedPrompt}"
+echo '<promise>COMPLETE</promise>'
+`);
+      chmodSync(fakeOmx, 0o755);
+
+      const proc = Bun.spawn({
+        cmd: [
+          "bun",
+          join(rootDir, "ralph.ts"),
+          "创建 GOAL_TEST.txt，内容为 goal mode works。完成后输出 <promise>COMPLETE</promise>。",
+          "--agent", "codex",
+          "--codex-goal",
+          "--codex-backend", "omx",
+          "--max-iterations", "1",
+          "--no-commit",
+          "--no-questions",
+          "--no-stream",
+          "--no-allow-all",
+        ],
+        cwd: workdir,
+        env: {
+          ...process.env,
+          RALPH_CODEX_BINARY: fakeCodex,
+          OMX_RALPH_OMX_BIN: fakeOmx,
+          OMX_RALPH_REASONING: "low",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(`${stdout}\n${stderr}`).toContain("[ralph] Native Codex /goal: attempting through OMX");
+      expect(readFileSync(capturedArgs, "utf-8").split("\n")[0]).toBe("exec");
+      expect(readFileSync(capturedPrompt, "utf-8").startsWith("/goal ")).toBe(true);
+      expect(readFileSync(join(workdir, ".ralph", "codex-goal-ledger.jsonl"), "utf-8")).toContain('"promptStartsWithGoal":true');
+    } finally {
+      if (existsSync(workdir)) rmSync(workdir, { recursive: true, force: true });
+    }
   });
 });

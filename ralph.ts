@@ -29,6 +29,7 @@ const stateDir = join(process.cwd(), ".ralph");
 const statePath = join(stateDir, "ralph-loop.state.json");
 const contextPath = join(stateDir, "ralph-context.md");
 const historyPath = join(stateDir, "ralph-history.json");
+const codexGoalLedgerPath = join(stateDir, "codex-goal-ledger.jsonl");
 const tasksPath = join(stateDir, "ralph-tasks.md");
 const questionsPath = join(stateDir, "ralph-questions.json");
 
@@ -42,6 +43,16 @@ type AgentType = (typeof AGENT_TYPES)[number];
 type AgentEnvOptions = { filterPlugins?: boolean; allowAllPermissions?: boolean };
 
 type AgentBuildArgsOptions = { allowAllPermissions?: boolean; extraFlags?: string[]; streamOutput?: boolean };
+
+type CodexBackend = "codex" | "omx";
+type CodexGoalPromptMode = "native" | "simulated";
+
+interface CodexGoalInvocation {
+  command: string;
+  args: string[];
+  promptMode: CodexGoalPromptMode;
+  prompt: string;
+}
 
 interface AgentConfig {
   type: AgentType;
@@ -365,6 +376,9 @@ Arguments:
 
 Options:
   --agent AGENT       AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent, qwen-code
+  --codex-goal       Run Codex iterations in goal mode; final Codex/OMX prompt starts with /goal
+  --codex-backend BACKEND  Backend for --codex-goal: codex or omx (default: detect; env RALPH_CODEX_BACKEND)
+  --codex-goal-native  Force a native /goal attempt even when backend support is unconfirmed
   --min-iterations N  Minimum iterations before completion allowed (default: 1)
   --max-iterations N  Maximum iterations before stopping (default: unlimited)
   --completion-promise TEXT  Phrase that signals completion (default: COMPLETE)
@@ -408,6 +422,7 @@ Examples:
   ralph "Fix the auth bug" --max-iterations 10
   ralph "Add tests" --completion-promise "ALL TESTS PASS" --model openai/gpt-5.1
   ralph "Fix the bug" --agent codex --model gpt-5-codex
+  ralph "Fix the bug" --agent codex --codex-goal --codex-backend omx --max-iterations 5
   ralph --prompt-file ./prompt.md --max-iterations 5
   ralph --status                                        # Check loop status
   ralph --add-context "Focus on the auth module first"  # Add hint for next iteration
@@ -909,6 +924,9 @@ let verboseTools = false;
 let promptSource = "";
 let handleQuestions = true;
 let lastActivityTimeoutMs = 0; // 0 = disabled
+let codexGoalMode = /^(1|true|yes|on)$/i.test(process.env.RALPH_CODEX_GOAL || "");
+let codexBackendInput = (process.env.RALPH_CODEX_BACKEND || "").trim().toLowerCase();
+let codexGoalForceNative = /^(1|true|yes|on|force)$/i.test(process.env.RALPH_CODEX_GOAL_NATIVE || "");
 
 const promptParts: string[] = [];
 let extraAgentFlags: string[] = [];
@@ -957,6 +975,18 @@ for (let i = 0; i < args.length; i++) {
       process.exit(1);
     }
     agentType = val as AgentType;
+  } else if (arg === "--codex-goal") {
+    codexGoalMode = true;
+  } else if (arg === "--codex-backend") {
+    const val = args[++i];
+    if (!val || !["codex", "omx"].includes(val)) {
+      console.error("Error: --codex-backend requires one of: codex, omx");
+      process.exit(1);
+    }
+    codexBackendInput = val;
+  } else if (arg === "--codex-goal-native") {
+    codexGoalMode = true;
+    codexGoalForceNative = true;
   } else if (arg === "--min-iterations") {
     const val = args[++i];
     if (!val || isNaN(parseInt(val))) {
@@ -1070,6 +1100,11 @@ if (rotationInput) {
   process.exit(1);
 }
 
+if (codexBackendInput && !["codex", "omx"].includes(codexBackendInput)) {
+  console.error("Error: RALPH_CODEX_BACKEND/--codex-backend must be one of: codex, omx");
+  process.exit(1);
+}
+
 function readPromptFile(path: string): string {
   if (!existsSync(path)) {
     console.error(`Error: Prompt file not found: ${path}`);
@@ -1142,6 +1177,9 @@ interface RalphState {
   agent: AgentType;
   rotation?: string[];
   rotationIndex?: number;
+  codexGoalMode?: boolean;
+  codexBackend?: CodexBackend;
+  codexGoalForceNative?: boolean;
 }
 
 // Create or update state
@@ -1543,6 +1581,101 @@ Unable to read .ralph/ralph-tasks.md
   }
 }
 
+
+function detectCodexBackend(agent: AgentConfig): CodexBackend {
+  const command = agent.command.toLowerCase();
+  if (command.includes("omx") || command.includes("oh-my-codex")) return "omx";
+  return "codex";
+}
+
+function resolveCodexBackend(input: string, agent: AgentConfig): CodexBackend {
+  if (input === "codex" || input === "omx") return input;
+  return detectCodexBackend(agent);
+}
+
+function codexGoalsFeatureEnabled(): boolean {
+  const codexPath = Bun.which(resolveCommand("codex", process.env.RALPH_CODEX_BINARY));
+  if (!codexPath) return false;
+  try {
+    const result = Bun.spawnSync([codexPath, "features", "list"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env },
+    });
+    const output = `${new TextDecoder().decode(result.stdout)}\n${new TextDecoder().decode(result.stderr)}`;
+    if (/^goals\s+\S+\s+true\b/m.test(output)) return true;
+  } catch {}
+
+  const configPath = join(process.env.CODEX_HOME || join(process.env.HOME || "", ".codex"), "config.toml");
+  try {
+    const config = readFileSync(configPath, "utf-8");
+    return /^\s*goals\s*=\s*true\s*$/m.test(config);
+  } catch {
+    return false;
+  }
+}
+
+function buildNativeCodexGoalObjective(promptText: string, state: RalphState): string {
+  return `你正在 open-ralph-wiggum 的一轮 Ralph iteration 中运行。\n不要依赖任何历史聊天上下文或 compacted context。\n只以当前仓库文件、git 状态、.harness 文件、progress 文件、.ralph 状态和测试日志为事实来源。\n跨轮状态必须写入文件系统；优先使用 .harness/progress.md、.ralph/codex-goal-ledger.jsonl、项目已有 progress 文件和 git diff。\n\n请完成以下目标：\n${promptText}\n\n完成前必须：\n1. 检查当前仓库状态；\n2. 阅读相关文件；\n3. 修改代码或文档；\n4. 运行项目已有测试或用户指定检查；\n5. 如果失败，写入可供下一轮 Ralph iteration 使用的进度文件，例如 .harness/progress.md、.ralph/codex-goal-ledger.jsonl 或项目已有 progress 文件；\n6. 只有真正完成时才输出 <promise>${state.completionPromise}</promise>。`;
+}
+
+function buildSimulatedCodexGoalPrompt(promptText: string, state: RalphState): string {
+  return `你现在模拟 Codex goal mode。\n这不是原生 /goal，但你必须按照 goal loop 行为执行。\n你处于 open-ralph-wiggum 的一轮 Ralph iteration 中。\n不要依赖历史聊天上下文或 compacted context。\n只以当前 repo 文件、git 状态、.harness 文件、progress 文件、.ralph 状态和测试日志为事实来源。\n跨轮状态必须写入文件系统；优先使用 .harness/progress.md、.ralph/codex-goal-ledger.jsonl、项目已有 progress 文件和 git diff。\n\n目标：\n${promptText}\n\n规则：\n1. 先理解目标和验收标准；\n2. 查看当前 git diff 和项目状态；\n3. 继续推进未完成部分；\n4. 运行测试或检查；\n5. 如果失败，把失败原因、已尝试方案、下一轮建议写入 .harness/progress.md、.ralph/codex-goal-ledger.jsonl 或项目已有 progress 文件；\n6. 如果成功，输出 <promise>${state.completionPromise}</promise>；\n7. 不要因为局部完成就提前输出 COMPLETE。`;
+}
+
+function nativeGoalEvidenceDetected(output: string): boolean {
+  return /Goal usage:|Goal set|Active goal|Working toward goal|get_goal|create_goal|update_goal/i.test(output);
+}
+
+function buildCodexGoalInvocation(params: {
+  backend: CodexBackend;
+  nativeGoal: boolean;
+  promptText: string;
+  state: RalphState;
+  model: string;
+  allowAllPermissions: boolean;
+  extraFlags: string[];
+}): CodexGoalInvocation {
+  const promptMode: CodexGoalPromptMode = params.nativeGoal ? "native" : "simulated";
+  const objective = params.nativeGoal
+    ? `/goal ${buildNativeCodexGoalObjective(params.promptText, params.state)}`
+    : buildSimulatedCodexGoalPrompt(params.promptText, params.state);
+
+  const command = params.backend === "omx"
+    ? resolveCommand("omx", process.env.OMX_RALPH_OMX_BIN)
+    : resolveCommand("codex", process.env.RALPH_CODEX_BINARY);
+
+  const args = ["exec"];
+  if (params.model) args.push("--model", params.model);
+  if (params.allowAllPermissions) {
+    args.push("--sandbox", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox");
+  }
+  if (params.backend === "omx") {
+    const reasoning = process.env.OMX_RALPH_REASONING || "high";
+    if (reasoning) args.push("-c", `model_reasoning_effort=${JSON.stringify(reasoning)}`);
+  }
+  if (params.extraFlags.length) args.push(...params.extraFlags);
+  args.push(objective);
+  return { command, args, promptMode, prompt: objective };
+}
+
+function appendCodexGoalLedger(entry: Record<string, unknown>): void {
+  try {
+    if (!existsSync(stateDir)) {
+      mkdirSync(stateDir, { recursive: true });
+    }
+    writeFileSync(codexGoalLedgerPath, `${JSON.stringify(entry)}\n`, { flag: "a" });
+  } catch {
+    // Ledger writing is best-effort and must not break the Ralph loop.
+  }
+}
+
+function shouldAttemptNativeCodexGoal(backend: CodexBackend): boolean {
+  if (codexGoalForceNative) return true;
+  if (backend === "omx") return true;
+  return codexGoalsFeatureEnabled();
+}
+
 /**
  * Check if output contains a completion promise.
  * First checks if the promise tag is the final non-empty line (strict mode).
@@ -1913,6 +2046,9 @@ async function runRalphLoop(): Promise<void> {
     model = existingState.model;
     agentType = existingState.agent;
     rotation = existingState.rotation ?? null;
+    codexGoalMode = existingState.codexGoalMode ?? codexGoalMode;
+    codexBackendInput = existingState.codexBackend ?? codexBackendInput;
+    codexGoalForceNative = existingState.codexGoalForceNative ?? codexGoalForceNative;
     console.log(`🔄 Resuming Ralph loop from ${statePath}`);
   }
 
@@ -1981,6 +2117,9 @@ async function runRalphLoop(): Promise<void> {
     agent: initialAgentType,
     rotation: rotation ?? undefined,
     rotationIndex: rotationActive ? 0 : undefined,
+    codexGoalMode: codexGoalMode || undefined,
+    codexBackend: codexGoalMode ? resolveCodexBackend(codexBackendInput, AGENTS[initialAgentType]) : undefined,
+    codexGoalForceNative: codexGoalForceNative || undefined,
   };
 
   if (!resuming) {
@@ -2026,6 +2165,22 @@ async function runRalphLoop(): Promise<void> {
     console.log("OpenCode plugins: non-auth plugins disabled");
   }
   if (allowAllPermissions) console.log("Permissions: auto-approve all tools");
+  if (codexGoalMode) {
+    const backend = state.codexBackend ?? resolveCodexBackend(codexBackendInput, AGENTS[state.agent]);
+    state.codexBackend = backend;
+    console.log("[ralph] Codex goal mode requested");
+    console.log(`[ralph] Codex backend: ${backend}`);
+    if (shouldAttemptNativeCodexGoal(backend)) {
+      console.log(backend === "omx" ? "[ralph] Native Codex /goal: attempting through OMX" : "[ralph] Native Codex /goal: attempting");
+      console.log("[ralph] Native Codex /goal prompt will be sent as the first token of the final agent prompt");
+      if (backend === "omx") {
+        console.warn("[ralph] Native Codex /goal through OMX is not pre-confirmed; output will be checked for evidence");
+      }
+    } else {
+      console.warn("[ralph] Native Codex /goal feature was not confirmed");
+      console.warn("[ralph] Falling back to simulated goal prompt");
+    }
+  }
   console.log("");
   console.log("Starting loop... (Ctrl+C to stop)");
   console.log("═".repeat(68));
@@ -2125,11 +2280,41 @@ async function runRalphLoop(): Promise<void> {
 
     try {
       // Build command arguments (permission flags are handled inside buildArgs)
-      const cmdArgs = agentConfig.buildArgs(fullPrompt, currentModel, {
-        allowAllPermissions,
-        extraFlags: extraAgentFlags,
-        streamOutput,
-      });
+      let command = agentConfig.command;
+      let cmdArgs: string[];
+      let codexGoalPromptMode: CodexGoalPromptMode | null = null;
+      if (codexGoalMode && currentAgent === "codex") {
+        const backend = state.codexBackend ?? resolveCodexBackend(codexBackendInput, agentConfig);
+        state.codexBackend = backend;
+        const nativeGoal = shouldAttemptNativeCodexGoal(backend);
+        const invocation = buildCodexGoalInvocation({
+          backend,
+          nativeGoal,
+          promptText: fullPrompt,
+          state,
+          model: currentModel,
+          allowAllPermissions,
+          extraFlags: extraAgentFlags,
+        });
+        command = invocation.command;
+        cmdArgs = invocation.args;
+        codexGoalPromptMode = invocation.promptMode;
+        appendCodexGoalLedger({
+          timestamp: new Date().toISOString(),
+          event: "iteration_started",
+          iteration: state.iteration,
+          backend,
+          promptMode: invocation.promptMode,
+          command: invocation.command,
+          promptStartsWithGoal: invocation.prompt.startsWith("/goal "),
+        });
+      } else {
+        cmdArgs = agentConfig.buildArgs(fullPrompt, currentModel, {
+          allowAllPermissions,
+          extraFlags: extraAgentFlags,
+          streamOutput,
+        });
+      }
 
       const env = agentConfig.buildEnv({
         filterPlugins: disablePlugins,
@@ -2138,7 +2323,7 @@ async function runRalphLoop(): Promise<void> {
 
       // Run agent using spawn for better argument handling
       // stdin is inherited so users can respond to permission prompts if needed
-      currentProc = Bun.spawn([agentConfig.command, ...cmdArgs], {
+      currentProc = Bun.spawn([command, ...cmdArgs], {
         cwd: process.cwd(),
         env,
         stdin: "inherit",
@@ -2194,6 +2379,22 @@ async function runRalphLoop(): Promise<void> {
       }
 
       const combinedOutput = `${result}\n${stderr}`;
+
+      if (codexGoalMode && currentAgent === "codex" && codexGoalPromptMode === "native") {
+        const confirmed = nativeGoalEvidenceDetected(combinedOutput);
+        if (confirmed) {
+          console.log("[ralph] Native Codex /goal: confirmed");
+        } else {
+          console.warn("[ralph] Native Codex /goal was attempted but not confirmed in output");
+        }
+        appendCodexGoalLedger({
+          timestamp: new Date().toISOString(),
+          event: "native_goal_evidence",
+          iteration: state.iteration,
+          backend: state.codexBackend,
+          confirmed,
+        });
+      }
 
       // For agents using stream-json, extract display text before checking completion
       const completionCheckText = extractAgentCompletionText(result, agentConfig.type);

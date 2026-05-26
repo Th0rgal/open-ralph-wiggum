@@ -178,6 +178,11 @@ ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise>
 ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
   --agent codex --model gpt-5-codex --max-iterations 5
 
+# Use Codex goal mode through OMX: Ralph owns cross-iteration retries, /goal owns one iteration
+RALPH_CODEX_GOAL=1 RALPH_CODEX_BACKEND=omx \
+ralph "根据 .harness/goal.md 完成任务。全部通过后输出 <promise>COMPLETE</promise>。" \
+  --agent codex --max-iterations 5
+
 # Use Copilot CLI
 ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
   --agent copilot --max-iterations 5
@@ -200,6 +205,11 @@ Configure agent binaries with these environment variables:
 | `RALPH_OPENCODE_BINARY` | Path to OpenCode CLI | `"opencode"` |
 | `RALPH_CLAUDE_BINARY` | Path to Claude Code CLI | `"claude"` |
 | `RALPH_CODEX_BINARY` | Path to Codex CLI | `"codex"` |
+| `RALPH_CODEX_GOAL` | Enable Codex goal mode for `--agent codex` (`1`, `true`, `yes`, `on`) | unset |
+| `RALPH_CODEX_BACKEND` | Goal-mode backend: `codex` or `omx` | detected from configured codex command |
+| `RALPH_CODEX_GOAL_NATIVE` | Force native `/goal` attempt even when support is not pre-confirmed | unset |
+| `OMX_RALPH_OMX_BIN` | Path to OMX CLI when `RALPH_CODEX_BACKEND=omx` | `"omx"` |
+| `OMX_RALPH_REASONING` | `model_reasoning_effort` passed to `omx exec` in goal mode | `"high"` |
 | `RALPH_COPILOT_BINARY` | Path to Copilot CLI | `"copilot"` |
 | `RALPH_CURSOR_AGENT_BINARY` | Path to Cursor Agent CLI | `"cursor-agent"` |
 | `RALPH_QWEN_CODE_BINARY` | Path to Qwen Code CLI | `"qwen"` |
@@ -215,6 +225,9 @@ ralph "<prompt>" [options]
 
 Options:
   --agent AGENT            AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent, qwen-code
+  --codex-goal             Run Codex iterations in goal mode; final Codex/OMX prompt starts with /goal
+  --codex-backend BACKEND  Backend for --codex-goal: codex or omx (default: detect)
+  --codex-goal-native      Force a native /goal attempt even when backend support is unconfirmed
   --min-iterations N       Minimum iterations before completion allowed (default: 1)
   --max-iterations N       Stop after N iterations (default: unlimited)
   --completion-promise T   Text that signals completion (default: COMPLETE)
@@ -237,6 +250,30 @@ Options:
   --init-config [PATH]     Write default agent config to PATH and exit
   --help                   Show help
 ```
+
+### Codex / OMX Goal Mode
+
+`--codex-goal` is an opt-in mode for `--agent codex`. Open Ralph still owns the outer loop: max iterations, process restarts, promise detection, `.ralph/ralph-history.json`, git/file-system state, and optional auto-commits. Inside each Ralph iteration, the Codex backend receives a final prompt whose first token is `/goal`, so Codex goal mode can own the single-session push for that iteration.
+
+```bash
+ralph \
+  "根据 .harness/goal.md 完成任务。运行 .harness/checks.sh。全部通过后输出 <promise>COMPLETE</promise>。" \
+  --agent codex \
+  --codex-goal \
+  --codex-backend omx \
+  --max-iterations 5
+```
+
+Equivalent environment form:
+
+```bash
+RALPH_CODEX_GOAL=1 RALPH_CODEX_BACKEND=omx ralph \
+  "根据 .harness/goal.md 完成任务。运行 .harness/checks.sh。全部通过后输出 <promise>COMPLETE</promise>。" \
+  --agent codex \
+  --max-iterations 5
+```
+
+Goal-mode iterations write a small durable audit ledger to `.ralph/codex-goal-ledger.jsonl`. This is intentionally file-system state, not Codex thread state, so later Ralph iterations can start fresh while retaining repo-native progress evidence. If native `/goal` cannot be pre-confirmed, Ralph prints an explicit warning; simulated fallback is used only when native Codex goal support is not available for the selected backend.
 
 ### Tasks Mode
 

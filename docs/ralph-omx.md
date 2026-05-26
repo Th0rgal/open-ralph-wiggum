@@ -34,12 +34,48 @@ ralph-omx \
 
 Open Ralph still owns iteration limits, promises, task handling, stream parsing, session state, and commit behavior. OMX owns the Codex execution command that runs each iteration.
 
+## Codex goal mode through OMX
+
+Use `--codex-goal --codex-backend omx` when you want this shape:
+
+```text
+Open Ralph outer loop
+  -> omx exec
+  -> Codex CLI /goal
+  -> one fresh process/session per Ralph iteration
+```
+
+In this mode Open Ralph does **not** rely on a previous Codex thread for cross-iteration memory. The final prompt passed to `omx exec` starts with `/goal`; the normal Ralph iteration prompt is embedded inside that goal objective. Cross-iteration state remains repo-native: git diff/history, `.harness/progress.md`, `.ralph/ralph-history.json`, `.ralph/codex-goal-ledger.jsonl`, and any project-specific logs.
+
+```bash
+RALPH_CODEX_GOAL=1 RALPH_CODEX_BACKEND=omx \
+ralph \
+  "根据 .harness/goal.md 完成任务。运行 .harness/checks.sh。全部通过后输出 <promise>COMPLETE</promise>。" \
+  --agent codex \
+  --max-iterations 5
+```
+
+Or with flags only:
+
+```bash
+ralph \
+  "根据 .harness/goal.md 完成任务。运行 .harness/checks.sh。全部通过后输出 <promise>COMPLETE</promise>。" \
+  --agent codex \
+  --codex-goal \
+  --codex-backend omx \
+  --max-iterations 5
+```
+
+Ralph logs whether native `/goal` is being attempted and records `promptStartsWithGoal:true` in `.ralph/codex-goal-ledger.jsonl`. OMX/Codex output is still checked for goal-state evidence; if it is not present, Ralph warns instead of silently claiming native confirmation.
+
 ## Parameter guidance
 
 - `--min-iterations N`: minimum loop count before completion can stop the run.
 - `--max-iterations N`: safety cap for the Open Ralph loop.
 - `--completion-promise TEXT`: stop phrase/promise that must appear when the task is truly done.
 - `--prompt-file PATH`: long prompt file for copy-paste-safe commands.
+- `--codex-goal`: opt into Codex goal-mode prompting for the `codex` agent.
+- `--codex-backend omx`: send the goal-mode iteration through `omx exec` instead of bare `codex exec`.
 - `--no-commit`: optional review-before-commit mode. Do not add it if you want Open Ralph's default auto-commit behavior.
 - `--no-stream`: buffer agent output instead of streaming.
 - `--no-questions`: prevent interactive question handling from stopping the loop.

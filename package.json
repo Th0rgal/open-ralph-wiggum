@@ -21,7 +21,10 @@
     "install.sh",
     "install.ps1",
     "uninstall.sh",
-    "uninstall.ps1"
+    "uninstall.ps1",
+    "docs/ralph-omx.md",
+    "contrib/omx",
+    "scripts/test-codex-goal-mode.sh"
   ],
   "keywords": [
     "opencode",
