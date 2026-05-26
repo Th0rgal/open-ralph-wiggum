@@ -4,7 +4,7 @@ description: >
   Use this skill whenever a user wants to run, install, configure, or understand open-ralph-wiggum (ralph).
   This skill can be used by any AI assistant or IDE agent (GitHub Copilot, Claude Code, Cursor, Windsurf, etc.).
   Triggers on: "ralph", "ralph wiggum", "agentic loop", "iterative AI loop", "autonomous coding loop",
-  "how to install ralph", "how to use ralph with Claude Code / Codex / Copilot / Cursor Agent / OpenCode",
+  "how to install ralph", "how to use ralph with Claude Code / Codex / Copilot / Cursor Agent / Qwen Code / OpenCode",
   "ralph --agent", "ralph --tasks", "ralph --status", "--max-iterations", "--rotation",
   "how do I run ralph in VS Code / Cursor / JetBrains / Neovim",
   or any question about looping an AI coding agent until a task is done.
@@ -16,7 +16,7 @@ description: >
 
 **Open Ralph Wiggum** (`ralph`) wraps any supported AI coding agent in an autonomous loop: it sends the same prompt on every iteration, and the agent self-corrects by observing the state of the repo. The loop ends when the agent outputs a configurable completion promise (e.g. `<promise>COMPLETE</promise>`).
 
-Supported agents: **Claude Code**, **OpenAI Codex**, **GitHub Copilot CLI**, **Cursor Agent**, **OpenCode** (default).
+Supported agents: **Claude Code**, **OpenAI Codex**, **GitHub Copilot CLI**, **Cursor Agent**, **Qwen Code**, **OpenCode** (default).
 
 ---
 
@@ -30,6 +30,7 @@ Supported agents: **Claude Code**, **OpenAI Codex**, **GitHub Copilot CLI**, **C
   - `codex` — [OpenAI Codex CLI](https://github.com/openai/codex)
   - `copilot` — [GitHub Copilot CLI](https://github.com/github/copilot-cli)
   - `cursor-agent` — [Cursor Agent CLI](https://cursor.com/cli/)
+  - `qwen` — [Qwen Code CLI](https://github.com/QwenLM/qwen-code)
   - `opencode` — [OpenCode](https://opencode.ai)
 
 ### npm (recommended)
@@ -107,6 +108,15 @@ ralph "Add integration tests for the API. Output <promise>COMPLETE</promise> whe
 
 Requires Cursor Agent CLI installed via `curl https://cursor.com/install -fsSL | bash`. For headless environments, set `CURSOR_API_KEY`.
 
+### Qwen Code
+
+```bash
+ralph "Refactor the database layer. Output <promise>COMPLETE</promise> when done." \
+  --agent qwen-code --max-iterations 15
+```
+
+Requires Qwen Code installed via `npm install -g @qwen-code/qwen-code`.
+
 ---
 
 ## Checking Available Agents and Models
@@ -156,10 +166,18 @@ copilot /login
 export GH_TOKEN=your_token
 ```
 
+**Qwen Code** — check version and install if needed:
+
+```bash
+qwen --version
+# If not installed:
+npm install -g @qwen-code/qwen-code
+```
+
 ### Quick environment check (Linux/macOS)
 
 ```bash
-for bin in opencode claude codex copilot cursor-agent; do
+for bin in opencode claude codex copilot cursor-agent qwen; do
   if command -v "$bin" &>/dev/null; then echo "✅ $bin: $(which $bin)"; else echo "❌ $bin: not found"; fi
 done && \
   [[ -n "$GH_TOKEN" ]] && echo "✅ GH_TOKEN set (Copilot CLI)" || echo "ℹ️  GH_TOKEN not set (needed only for Copilot CLI)"
@@ -176,6 +194,7 @@ done && \
 | OpenAI Codex       | `--agent codex`         | `codex`        | `RALPH_CODEX_BINARY`          |
 | Copilot CLI        | `--agent copilot`       | `copilot`      | `RALPH_COPILOT_BINARY`        |
 | Cursor Agent       | `--agent cursor-agent`  | `cursor-agent` | `RALPH_CURSOR_AGENT_BINARY`   |
+| Qwen Code          | `--agent qwen-code`     | `qwen`         | `RALPH_QWEN_CODE_BINARY`      |
 
 Use environment variables to point to a custom binary path if the CLI is not on `$PATH`.
 
@@ -184,7 +203,7 @@ Use environment variables to point to a custom binary path if the CLI is not on 
 ## Key Options
 
 ```
---agent AGENT            Agent to use (opencode|claude-code|codex|copilot|cursor-agent)
+--agent AGENT            Agent to use (opencode|claude-code|codex|copilot|cursor-agent|qwen-code)
 --model MODEL            Model name (agent-specific, e.g. claude-sonnet-4, gpt-5-codex)
 --max-iterations N       Stop after N iterations (always set this as a safety net)
 --min-iterations N       Require at least N iterations before allowing completion (default: 1)
@@ -261,6 +280,13 @@ Ralph is a terminal CLI tool that runs inside any IDE's integrated terminal.
      --agent cursor-agent --max-iterations 20
    ```
 
+   **Qwen Code:**
+
+   ```bash
+   ralph "Your task. Output <promise>COMPLETE</promise> when done." \
+     --agent qwen-code --max-iterations 20
+   ```
+
 3. Open a **second terminal tab** to monitor while the loop runs:
    ```bash
    ralph --status
@@ -310,6 +336,12 @@ Run ralph in a split terminal. Examples per agent:
 :split | terminal ralph "Your task. Output <promise>COMPLETE</promise> when done." --agent cursor-agent --max-iterations 20
 ```
 
+**Qwen Code:**
+
+```vim
+:split | terminal ralph "Your task. Output <promise>COMPLETE</promise> when done." --agent qwen-code --max-iterations 20
+```
+
 Or use a plugin like `toggleterm.nvim` for a persistent terminal.
 
 ### Any IDE — Prompt File Workflow
@@ -344,6 +376,12 @@ ralph --prompt-file ./task.md --agent copilot --max-iterations 30
 
 ```bash
 ralph --prompt-file ./task.md --agent cursor-agent --max-iterations 30
+```
+
+**Qwen Code:**
+
+```bash
+ralph --prompt-file ./task.md --agent qwen-code --max-iterations 30
 ```
 
 ---
@@ -462,6 +500,8 @@ ralph "Refactor the auth module" \
   --max-iterations 15
 ```
 
+Valid agents are `opencode`, `claude-code`, `codex`, `copilot`, `cursor-agent`, and `qwen-code`.
+
 Format: `agent:model` entries separated by commas. When `--rotation` is set, `--agent` and `--model` are ignored. The list cycles (iteration 3 of a 2-entry rotation goes back to entry 1).
 
 ---
@@ -525,6 +565,32 @@ Notes:
 - Default model is Claude Sonnet 4.5; override with `--model`
 - `--no-plugins` has no effect with Copilot CLI
 - `--allow-all` (default) maps to `--allow-all` + `--no-ask-user` in Copilot CLI
+
+### Qwen Code
+
+Install:
+
+```bash
+npm install -g @qwen-code/qwen-code
+```
+
+Usage:
+
+```bash
+ralph "Refactor the database layer" \
+  --agent qwen-code --max-iterations 10
+
+# With a specific model
+ralph "Add integration tests for the API" \
+  --agent qwen-code --model qwen-coder-plus --max-iterations 15
+```
+
+Notes:
+
+- `--allow-all` (default) maps to `--yolo` in Qwen Code CLI
+- `--no-plugins` has no effect with Qwen Code
+- Headless mode uses `--output-format stream-json --include-partial-messages`
+- Binary is `qwen`; override with `RALPH_QWEN_CODE_BINARY`
 
 ### Cursor Agent
 

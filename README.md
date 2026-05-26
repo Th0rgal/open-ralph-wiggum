@@ -1,14 +1,14 @@
 <p align="center">
   <h1 align="center">Open Ralph Wiggum</h1>
-  <h3 align="center">Autonomous Agentic Loop for Claude Code, Codex, Copilot CLI, Cursor Agent & OpenCode</h3>
+  <h3 align="center">Autonomous Agentic Loop for Claude Code, Codex, Copilot CLI, Cursor Agent, Qwen Code & OpenCode</h3>
 </p>
 
 <p align="center">
-  <img src="screenshot.webp" alt="Open Ralph Wiggum - Iterative AI coding loop for Claude Code and Codex" />
+  <img src="screenshot.webp" alt="Open Ralph Wiggum - Iterative AI coding loop for multiple AI coding agents" />
 </p>
 
 <p align="center">
-  <em>Works with <b>Claude Code</b>, <b>OpenAI Codex</b>, <b>Copilot CLI</b>, <b>Cursor Agent</b>, and <b>OpenCode</b> — switch agents with <code>--agent</code>.</em><br>
+  <em>Works with <b>Claude Code</b>, <b>OpenAI Codex</b>, <b>Copilot CLI</b>, <b>Cursor Agent</b>, <b>Qwen Code</b>, and <b>OpenCode</b> — switch agents with <code>--agent</code>.</em><br>
   <em>Based on the <a href="https://ghuntley.com/ralph/">Ralph Wiggum technique</a> by Geoffrey Huntley</em>
 </p>
 
@@ -74,14 +74,14 @@ ralph "Fix the failing tests" --max-iterations 10
 
 ## What is Open Ralph Wiggum?
 
-Open Ralph Wiggum implements the **Ralph Wiggum technique** — an autonomous agentic loop where an AI coding agent (Claude Code, Codex, Cursor Agent, or OpenCode) receives the **same prompt repeatedly** until it completes a task. Each iteration, the AI sees its previous work in files and git history, enabling self-correction and incremental progress.
+Open Ralph Wiggum implements the **Ralph Wiggum technique** — an autonomous agentic loop where an AI coding agent (Claude Code, Codex, Copilot CLI, Cursor Agent, Qwen Code, or OpenCode) receives the **same prompt repeatedly** until it completes a task. Each iteration, the AI sees its previous work in files and git history, enabling self-correction and incremental progress.
 
 This is a **CLI tool** that wraps any supported AI coding agent in a persistent development loop. No plugins required — just install and run.
 
 ```bash
 # The essence of the Ralph loop:
 while true; do
-  claude-code "Build feature X. Output <promise>DONE</promise> when complete."  # or codex, opencode
+  claude-code "Build feature X. Output <promise>DONE</promise> when complete."  # or codex, copilot, cursor-agent, qwen, opencode
 done
 ```
 
@@ -100,7 +100,7 @@ Switch between AI coding agents without changing your workflow:
 
 ## Key Features
 
-- **Multi-Agent Support** — Use Claude Code, Codex, or OpenCode with the same workflow
+- **Multi-Agent Support** — Use Claude Code, Codex, Copilot CLI, Cursor Agent, Qwen Code, or OpenCode with the same workflow
 - **Self-Correcting Loops** — Agent sees its previous work and fixes its own mistakes
 - **Autonomous Execution** — Set it running and come back to finished code
 - **Task Tracking** — Built-in task management with `--tasks` mode
@@ -127,6 +127,7 @@ Switch between AI coding agents without changing your workflow:
   - [Codex](https://github.com/openai/codex) — OpenAI's Codex CLI
   - [Copilot CLI](https://github.com/github/copilot-cli) — GitHub's Copilot CLI
   - [Cursor Agent](https://cursor.com/cli/) — Cursor's headless Agent CLI
+  - [Qwen Code](https://github.com/QwenLM/qwen-code) — Alibaba's Qwen Code CLI
   - [OpenCode](https://opencode.ai) — Open-source AI coding assistant
 
 ### npm (recommended)
@@ -180,6 +181,10 @@ ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise>
 # Use Copilot CLI
 ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
   --agent copilot --max-iterations 5
+
+# Use Qwen Code
+ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
+  --agent qwen-code --max-iterations 5
 
 # Complex project with Tasks Mode
 ralph "Build a full-stack web application with user auth and database" \
