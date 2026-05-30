@@ -139,26 +139,10 @@ Use `--force-config` only when you intentionally want to replace the Open Ralph 
 
 ## Verification
 
-Local:
-
 ```bash
 bash contrib/omx/test-smoke.sh
 RALPH_OMX_SHIM_DEBUG=1 ralph-omx --help | head -80
 ```
-
-Remote `mac32`:
-
-```bash
-bash contrib/omx/validate-mac32.sh mac32
-```
-
-If `mac32` has no checkout yet:
-
-```bash
-ssh mac32 'mkdir -p ~/src && cd ~/src && git clone --branch lqy/ralph-omx-integration https://github.com/liu-qingyuan/open-ralph-wiggum.git open-ralph-wiggum-omx-smoke'
-```
-
-Then rerun the validation script.
 
 ## Maintenance boundary
 

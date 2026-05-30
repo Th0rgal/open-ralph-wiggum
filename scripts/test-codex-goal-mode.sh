@@ -35,13 +35,13 @@ git config user.email "ralph-goal-test@example.invalid"
 git config user.name "Ralph Goal Test"
 mkdir -p .harness
 cat > .harness/goal.md <<'GOAL'
-创建 GOAL_TEST.txt，内容为 goal mode works。
+Create GOAL_TEST.txt with the exact contents: goal mode works
 GOAL
 git add .harness/goal.md
 git commit -q -m "seed goal test"
 
 
-PROMPT="根据 .harness/goal.md 完成任务。完成后输出 <promise>COMPLETE</promise>。"
+PROMPT="Complete the task described in .harness/goal.md. Output <promise>COMPLETE</promise> when done."
 
 run_ralph() {
   RALPH_CODEX_BINARY="${RALPH_CODEX_BINARY:-codex}" "$BUN_BIN" "$ROOT_DIR/ralph.ts" "$@"

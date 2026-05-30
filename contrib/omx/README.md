@@ -16,7 +16,6 @@ The result keeps Open Ralph's own loop mechanics while letting OMX/Codex be the 
 - `agents.example.json` — Open Ralph config that overrides only the built-in `codex` agent command.
 - `install.sh` — idempotent installer for wrappers and `~/.config/open-ralph-wiggum/agents.json`.
 - `test-smoke.sh` — safe local smoke test; it does not run an editing task.
-- `validate-mac32.sh` — read-only `ssh mac32` preflight plus optional remote checkout smoke.
 
 ## Install
 
@@ -57,30 +56,3 @@ RALPH_OMX_SHIM_DEBUG=1 contrib/omx/ralph-omx --help | head -80
 ```
 
 The adapter can also be inspected without launching a real agent by setting `OMX_RALPH_OMX_BIN` to a fake executable; `test-smoke.sh` does this automatically.
-
-## mac32 validation
-
-Start with a read-only preflight:
-
-```bash
-bash contrib/omx/validate-mac32.sh mac32
-```
-
-If the remote checkout does not exist, clone the fork branch on `mac32` and rerun:
-
-```bash
-ssh mac32 'mkdir -p ~/src && cd ~/src && git clone --branch lqy/ralph-omx-integration https://github.com/liu-qingyuan/open-ralph-wiggum.git open-ralph-wiggum-omx-smoke'
-bash contrib/omx/validate-mac32.sh mac32
-```
-
-## Upstream sync convention
-
-This fork keeps the official repository as `origin` and adds the personal fork as `fork`:
-
-```bash
-git remote -v
-# origin  https://github.com/Th0rgal/open-ralph-wiggum.git
-# fork    https://github.com/liu-qingyuan/open-ralph-wiggum.git
-```
-
-When updating from upstream, fetch/rebase from `origin/master`, rerun `bash contrib/omx/test-smoke.sh`, and push the integration branch to `fork`.

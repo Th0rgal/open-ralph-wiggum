@@ -340,7 +340,7 @@ echo '<promise>COMPLETE</promise>'
         cmd: [
           "bun",
           join(rootDir, "ralph.ts"),
-          "创建 GOAL_TEST.txt，内容为 goal mode works。完成后输出 <promise>COMPLETE</promise>。",
+          "Create GOAL_TEST.txt with the contents 'goal mode works'. Output <promise>COMPLETE</promise> when done.",
           "--agent", "codex",
           "--codex-goal",
           "--codex-backend", "omx",

@@ -1850,11 +1850,11 @@ function codexGoalsFeatureEnabled(): boolean {
 }
 
 function buildNativeCodexGoalObjective(promptText: string, state: RalphState): string {
-  return `你正在 open-ralph-wiggum 的一轮 Ralph iteration 中运行。\n不要依赖任何历史聊天上下文或 compacted context。\n只以当前仓库文件、git 状态、.harness 文件、progress 文件、.ralph 状态和测试日志为事实来源。\n跨轮状态必须写入文件系统；优先使用 .harness/progress.md、.ralph/codex-goal-ledger.jsonl、项目已有 progress 文件和 git diff。\n\n请完成以下目标：\n${promptText}\n\n完成前必须：\n1. 检查当前仓库状态；\n2. 阅读相关文件；\n3. 修改代码或文档；\n4. 运行项目已有测试或用户指定检查；\n5. 如果失败，写入可供下一轮 Ralph iteration 使用的进度文件，例如 .harness/progress.md、.ralph/codex-goal-ledger.jsonl 或项目已有 progress 文件；\n6. 只有真正完成时才输出 <promise>${state.completionPromise}</promise>。`;
+  return `You are running inside a single Ralph iteration of open-ralph-wiggum.\nDo not rely on any prior chat history or compacted context.\nTreat only the current repository files, git status, .harness files, progress files, .ralph state, and test logs as the source of truth.\nCross-iteration state must be written to the filesystem; prefer .harness/progress.md, .ralph/codex-goal-ledger.jsonl, any existing project progress file, and git diff.\n\nComplete the following objective:\n${promptText}\n\nBefore finishing you must:\n1. Inspect the current repository state.\n2. Read the relevant files.\n3. Make the necessary code or documentation changes.\n4. Run the project's existing tests or the checks requested by the user.\n5. If something fails, write a progress file the next Ralph iteration can use, e.g. .harness/progress.md, .ralph/codex-goal-ledger.jsonl, or an existing project progress file.\n6. Only output <promise>${state.completionPromise}</promise> when the work is genuinely complete.`;
 }
 
 function buildSimulatedCodexGoalPrompt(promptText: string, state: RalphState): string {
-  return `你现在模拟 Codex goal mode。\n这不是原生 /goal，但你必须按照 goal loop 行为执行。\n你处于 open-ralph-wiggum 的一轮 Ralph iteration 中。\n不要依赖历史聊天上下文或 compacted context。\n只以当前 repo 文件、git 状态、.harness 文件、progress 文件、.ralph 状态和测试日志为事实来源。\n跨轮状态必须写入文件系统；优先使用 .harness/progress.md、.ralph/codex-goal-ledger.jsonl、项目已有 progress 文件和 git diff。\n\n目标：\n${promptText}\n\n规则：\n1. 先理解目标和验收标准；\n2. 查看当前 git diff 和项目状态；\n3. 继续推进未完成部分；\n4. 运行测试或检查；\n5. 如果失败，把失败原因、已尝试方案、下一轮建议写入 .harness/progress.md、.ralph/codex-goal-ledger.jsonl 或项目已有 progress 文件；\n6. 如果成功，输出 <promise>${state.completionPromise}</promise>；\n7. 不要因为局部完成就提前输出 COMPLETE。`;
+  return `You are now simulating Codex goal mode.\nThis is not native /goal, but you must behave as a goal loop would.\nYou are inside a single Ralph iteration of open-ralph-wiggum.\nDo not rely on prior chat history or compacted context.\nTreat only the current repository files, git status, .harness files, progress files, .ralph state, and test logs as the source of truth.\nCross-iteration state must be written to the filesystem; prefer .harness/progress.md, .ralph/codex-goal-ledger.jsonl, any existing project progress file, and git diff.\n\nObjective:\n${promptText}\n\nRules:\n1. First understand the objective and its acceptance criteria.\n2. Review the current git diff and project state.\n3. Continue advancing the unfinished work.\n4. Run the tests or checks.\n5. If something fails, record the failure reason, what you tried, and a suggestion for the next iteration in .harness/progress.md, .ralph/codex-goal-ledger.jsonl, or an existing project progress file.\n6. If it succeeds, output <promise>${state.completionPromise}</promise>.\n7. Do not output the completion promise early just because part of the work is done.`;
 }
 
 function nativeGoalEvidenceDetected(output: string): boolean {
@@ -1886,7 +1886,7 @@ function buildCodexGoalInvocation(params: {
   }
   if (params.backend === "omx") {
     const reasoning = process.env.OMX_RALPH_REASONING || "high";
-    if (reasoning) args.push("-c", `model_reasoning_effort=${JSON.stringify(reasoning)}`);
+    if (reasoning) args.push("-c", `model_reasoning_effort=${reasoning}`);
   }
   if (params.extraFlags.length) args.push(...params.extraFlags);
   args.push(objective);
