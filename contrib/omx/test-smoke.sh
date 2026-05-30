@@ -69,7 +69,7 @@ if grep -q -- '--full-auto' "$TMP_DIR/adapter.out"; then
 fi
 printf '[smoke] adapter rewrites codex template into omx exec args\n'
 
-bash "$SCRIPT_DIR/install.sh" --dry-run >/"$TMP_DIR/install.out"
+bash "$SCRIPT_DIR/install.sh" --dry-run >"$TMP_DIR/install.out"
 grep -q 'ralph-omx' "$TMP_DIR/install.out"
 printf '[smoke] installer dry-run works\n'
 

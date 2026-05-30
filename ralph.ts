@@ -2662,6 +2662,7 @@ async function runRalphLoop(): Promise<void> {
       let completionDetected = completionSignalDetected;
       if (tasksMode && completionSignalDetected) {
         let tasksGatePassed = false;
+        let warnedReason = false;
         try {
           if (existsSync(tasksPath)) {
             const tasksContent = readFileSync(tasksPath, "utf-8");
@@ -2671,6 +2672,7 @@ async function runRalphLoop(): Promise<void> {
             if (checkboxGatePassed && !minimumGate.passed) {
               console.warn(`\n⚠️  Completion promise ignored: task minimum iterations not met.`);
               console.warn(minimumGate.blockers.join("\n"));
+              warnedReason = true;
             }
           }
         } catch {
@@ -2679,7 +2681,9 @@ async function runRalphLoop(): Promise<void> {
 
         if (!tasksGatePassed) {
           completionDetected = false;
-          console.warn(`\n⚠️  Completion promise ignored: tasks file still has incomplete items.`);
+          if (!warnedReason) {
+            console.warn(`\n⚠️  Completion promise ignored: tasks file still has incomplete items.`);
+          }
         }
       }
 
