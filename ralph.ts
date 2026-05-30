@@ -1882,7 +1882,10 @@ function buildCodexGoalInvocation(params: {
   const args = ["exec"];
   if (params.model) args.push("--model", params.model);
   if (params.allowAllPermissions) {
-    args.push("--sandbox", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox");
+    args.push("--sandbox", "danger-full-access");
+    if (params.backend !== "omx") {
+      args.push("--dangerously-bypass-approvals-and-sandbox");
+    }
   }
   if (params.backend === "omx") {
     const reasoning = process.env.OMX_RALPH_REASONING || "high";
