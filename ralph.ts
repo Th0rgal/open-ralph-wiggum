@@ -29,6 +29,8 @@ const stateDir = join(process.cwd(), ".ralph");
 const statePath = join(stateDir, "ralph-loop.state.json");
 const contextPath = join(stateDir, "ralph-context.md");
 const historyPath = join(stateDir, "ralph-history.json");
+const codexGoalLedgerPath = join(stateDir, "codex-goal-ledger.jsonl");
+const taskRunsPath = join(stateDir, "ralph-task-runs.json");
 const tasksPath = join(stateDir, "ralph-tasks.md");
 const questionsPath = join(stateDir, "ralph-questions.json");
 
@@ -42,6 +44,16 @@ type AgentType = (typeof AGENT_TYPES)[number];
 type AgentEnvOptions = { filterPlugins?: boolean; allowAllPermissions?: boolean };
 
 type AgentBuildArgsOptions = { allowAllPermissions?: boolean; extraFlags?: string[]; streamOutput?: boolean };
+
+type CodexBackend = "codex" | "omx";
+type CodexGoalPromptMode = "native" | "simulated";
+
+interface CodexGoalInvocation {
+  command: string;
+  args: string[];
+  promptMode: CodexGoalPromptMode;
+  prompt: string;
+}
 
 interface AgentConfig {
   type: AgentType;
@@ -365,12 +377,16 @@ Arguments:
 
 Options:
   --agent AGENT       AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent, qwen-code
+  --codex-goal       Run Codex iterations in goal mode; final Codex/OMX prompt starts with /goal
+  --codex-backend BACKEND  Backend for --codex-goal: codex or omx (default: detect; env RALPH_CODEX_BACKEND)
+  --codex-goal-native  Force a native /goal attempt even when backend support is unconfirmed
   --min-iterations N  Minimum iterations before completion allowed (default: 1)
   --max-iterations N  Maximum iterations before stopping (default: unlimited)
   --completion-promise TEXT  Phrase that signals completion (default: COMPLETE)
   --abort-promise TEXT  Phrase that signals early abort (e.g., precondition failed)
   --tasks, -t         Enable Tasks Mode for structured task tracking
   --task-promise TEXT Phrase that signals task completion (default: READY_FOR_NEXT_TASK)
+  --task-min-iterations N  Tasks Mode only: require each top-level task to receive N Ralph iterations before completion (default: 1)
   --model MODEL       Model to use (agent-specific, e.g., anthropic/claude-sonnet)
   --rotation LIST     Agent/model rotation for each iteration (comma-separated)
                       Each entry must be "agent:model" format
@@ -408,6 +424,7 @@ Examples:
   ralph "Fix the auth bug" --max-iterations 10
   ralph "Add tests" --completion-promise "ALL TESTS PASS" --model openai/gpt-5.1
   ralph "Fix the bug" --agent codex --model gpt-5-codex
+  ralph "Fix the bug" --agent codex --codex-goal --codex-backend omx --max-iterations 5
   ralph --prompt-file ./prompt.md --max-iterations 5
   ralph --status                                        # Check loop status
   ralph --add-context "Focus on the auth module first"  # Add hint for next iteration
@@ -801,6 +818,27 @@ interface Task {
   originalLine: string;
 }
 
+interface TaskRunEntry {
+  text: string;
+  attempts: number;
+  firstSeenAt: string;
+  lastAttemptAt: string;
+}
+
+interface TaskRunLedger {
+  version: 1;
+  tasks: Record<string, TaskRunEntry>;
+}
+
+interface TaskAttemptContext {
+  id: string;
+  text: string;
+  status: Task["status"];
+  attempt: number;
+  required: number;
+  wasCompleteBeforeAttempt: boolean;
+}
+
 // Parse markdown tasks into structured data
 function parseTasks(content: string): Task[] {
   const tasks: Task[] = [];
@@ -887,6 +925,166 @@ function allTasksComplete(tasks: Task[]): boolean {
   return tasks.length > 0 && tasks.every(t => t.status === "complete" && t.subtasks.every(st => st.status === "complete"));
 }
 
+function normalizeTaskText(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function hashString(input: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function getTaskId(tasks: Task[], index: number): string {
+  const normalized = normalizeTaskText(tasks[index]?.text ?? "");
+  let occurrence = 0;
+  for (let i = 0; i <= index; i++) {
+    if (normalizeTaskText(tasks[i]?.text ?? "") === normalized) occurrence++;
+  }
+  return `task-${hashString(`${normalized}#${occurrence}`)}`;
+}
+
+function loadTaskRunLedger(): TaskRunLedger {
+  if (!existsSync(taskRunsPath)) return { version: 1, tasks: {} };
+  try {
+    const parsed = JSON.parse(readFileSync(taskRunsPath, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || !parsed.tasks || typeof parsed.tasks !== "object") {
+      return { version: 1, tasks: {} };
+    }
+    return { version: 1, tasks: parsed.tasks as Record<string, TaskRunEntry> };
+  } catch {
+    return { version: 1, tasks: {} };
+  }
+}
+
+function saveTaskRunLedger(ledger: TaskRunLedger): void {
+  if (!existsSync(stateDir)) {
+    mkdirSync(stateDir, { recursive: true });
+  }
+  writeFileSync(taskRunsPath, JSON.stringify(ledger, null, 2));
+}
+
+function getTaskAttempts(ledger: TaskRunLedger, tasks: Task[], index: number): number {
+  const id = getTaskId(tasks, index);
+  const attempts = ledger.tasks[id]?.attempts;
+  return typeof attempts === "number" && attempts > 0 ? attempts : 0;
+}
+
+function findTaskIndexForIteration(tasks: Task[], ledger: TaskRunLedger, taskMinIterations: number): number {
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i];
+    const attempts = getTaskAttempts(ledger, tasks, i);
+    if (task.status !== "complete") return i;
+    if (taskMinIterations > 1 && attempts < taskMinIterations) return i;
+  }
+
+  return -1;
+}
+
+function recordTaskAttemptForIteration(state: RalphState): TaskAttemptContext | undefined {
+  if (!state.tasksMode || state.taskMinIterations <= 1 || !existsSync(tasksPath)) return undefined;
+
+  try {
+    const tasksContent = readFileSync(tasksPath, "utf-8");
+    const tasks = parseTasks(tasksContent);
+    const ledger = loadTaskRunLedger();
+    const taskIndex = findTaskIndexForIteration(tasks, ledger, state.taskMinIterations);
+    if (taskIndex < 0) return undefined;
+
+    const task = tasks[taskIndex];
+    const id = getTaskId(tasks, taskIndex);
+    const now = new Date().toISOString();
+    const existing = ledger.tasks[id];
+    const attempt = (existing?.attempts ?? 0) + 1;
+    ledger.tasks[id] = {
+      text: task.text,
+      attempts: attempt,
+      firstSeenAt: existing?.firstSeenAt ?? now,
+      lastAttemptAt: now,
+    };
+    saveTaskRunLedger(ledger);
+
+    return {
+      id,
+      text: task.text,
+      status: task.status,
+      attempt,
+      required: state.taskMinIterations,
+      wasCompleteBeforeAttempt: task.status === "complete",
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function taskMinimumStatus(tasksContent: string, taskMinIterations: number): { passed: boolean; blockers: string[] } {
+  if (taskMinIterations <= 1) return { passed: true, blockers: [] };
+
+  const tasks = parseTasks(tasksContent);
+  if (tasks.length === 0) return { passed: false, blockers: ["No top-level tasks found"] };
+
+  const ledger = loadTaskRunLedger();
+  const blockers: string[] = [];
+  for (let i = 0; i < tasks.length; i++) {
+    const attempts = getTaskAttempts(ledger, tasks, i);
+    if (attempts < taskMinIterations) {
+      blockers.push(`- ${tasks[i].text} (${attempts}/${taskMinIterations} Ralph iterations)`);
+    }
+  }
+
+  return { passed: blockers.length === 0, blockers };
+}
+
+function taskCompletionSatisfiedByTaskGate(state: RalphState): { satisfied: boolean; taskText?: string } {
+  const attemptContext = state.taskAttemptContext;
+  if (!state.tasksMode || !attemptContext || attemptContext.attempt < attemptContext.required || !existsSync(tasksPath)) {
+    return { satisfied: false };
+  }
+
+  try {
+    const tasks = parseTasks(readFileSync(tasksPath, "utf-8"));
+    const completedTask = tasks.find((task, index) => getTaskId(tasks, index) === attemptContext.id);
+    if (!completedTask) return { satisfied: false };
+
+    const taskComplete = completedTask.status === "complete" && completedTask.subtasks.every(subtask => subtask.status === "complete");
+    return taskComplete ? { satisfied: true, taskText: completedTask.text } : { satisfied: false };
+  } catch {
+    return { satisfied: false };
+  }
+}
+
+function getTaskAttemptTemplateContext(state: RalphState): Record<string, string> {
+  if (!state.tasksMode || !state.taskAttemptContext) {
+    return {
+      task_id: "",
+      task_text: "",
+      task_attempt: "",
+      task_min_required: String(state.taskMinIterations ?? 1),
+      task_can_complete: "true",
+      task_gate_instruction: "",
+    };
+  }
+
+  const context = state.taskAttemptContext;
+  const canComplete = context.attempt >= context.required;
+  const completedEarly = context.wasCompleteBeforeAttempt && !canComplete;
+  const taskGateInstruction = canComplete
+    ? `Current top-level task "${context.text}" has met its task minimum (${context.attempt}/${context.required}); it may remain or be marked [x] when verified, then output <promise>${state.taskPromise}</promise>.`
+    : `Current top-level task "${context.text}" is at ${context.attempt}/${context.required} Ralph iterations${completedEarly ? " and was already marked [x] early" : ""}; keep focusing this task, do not mark [x] yet, and do not advance to a later task.`;
+
+  return {
+    task_id: context.id,
+    task_text: context.text,
+    task_attempt: String(context.attempt),
+    task_min_required: String(context.required),
+    task_can_complete: String(canComplete),
+    task_gate_instruction: taskGateInstruction,
+  };
+}
+
 // Parse options
 let prompt = "";
 let minIterations = 1; // default: 1 iteration minimum
@@ -895,6 +1093,7 @@ let completionPromise = "COMPLETE";
 let abortPromise = ""; // Optional abort promise for early exit on precondition failure
 let tasksMode = false;
 let taskPromise = "READY_FOR_NEXT_TASK";
+let taskMinIterations = 1;
 let model = "";
 let agentType: AgentType = "opencode";
 let rotationInput = "";
@@ -909,6 +1108,9 @@ let verboseTools = false;
 let promptSource = "";
 let handleQuestions = true;
 let lastActivityTimeoutMs = 0; // 0 = disabled
+let codexGoalMode = /^(1|true|yes|on)$/i.test(process.env.RALPH_CODEX_GOAL || "");
+let codexBackendInput = (process.env.RALPH_CODEX_BACKEND || "").trim().toLowerCase();
+let codexGoalForceNative = /^(1|true|yes|on|force)$/i.test(process.env.RALPH_CODEX_GOAL_NATIVE || "");
 
 const promptParts: string[] = [];
 let extraAgentFlags: string[] = [];
@@ -957,6 +1159,18 @@ for (let i = 0; i < args.length; i++) {
       process.exit(1);
     }
     agentType = val as AgentType;
+  } else if (arg === "--codex-goal") {
+    codexGoalMode = true;
+  } else if (arg === "--codex-backend") {
+    const val = args[++i];
+    if (!val || !["codex", "omx"].includes(val)) {
+      console.error("Error: --codex-backend requires one of: codex, omx");
+      process.exit(1);
+    }
+    codexBackendInput = val;
+  } else if (arg === "--codex-goal-native") {
+    codexGoalMode = true;
+    codexGoalForceNative = true;
   } else if (arg === "--min-iterations") {
     const val = args[++i];
     if (!val || isNaN(parseInt(val))) {
@@ -994,6 +1208,13 @@ for (let i = 0; i < args.length; i++) {
       process.exit(1);
     }
     taskPromise = val;
+  } else if (arg === "--task-min-iterations" || arg === "--min-iterations-per-task") {
+    const val = args[++i];
+    if (!val || !/^\d+$/.test(val)) {
+      console.error("Error: --task-min-iterations requires a positive integer");
+      process.exit(1);
+    }
+    taskMinIterations = Number(val);
   } else if (arg === "--rotation") {
     const val = args[++i];
     if (!val) {
@@ -1070,6 +1291,11 @@ if (rotationInput) {
   process.exit(1);
 }
 
+if (codexBackendInput && !["codex", "omx"].includes(codexBackendInput)) {
+  console.error("Error: RALPH_CODEX_BACKEND/--codex-backend must be one of: codex, omx");
+  process.exit(1);
+}
+
 function readPromptFile(path: string): string {
   if (!existsSync(path)) {
     console.error(`Error: Prompt file not found: ${path}`);
@@ -1126,6 +1352,11 @@ if (maxIterations > 0 && minIterations > maxIterations) {
   process.exit(1);
 }
 
+if (taskMinIterations < 1) {
+  console.error(`Error: --task-min-iterations (${taskMinIterations}) must be at least 1`);
+  process.exit(1);
+}
+
 interface RalphState {
   active: boolean;
   iteration: number;
@@ -1135,6 +1366,8 @@ interface RalphState {
   abortPromise?: string; // Optional abort signal for early exit
   tasksMode: boolean;
   taskPromise: string;
+  taskMinIterations: number;
+  taskAttemptContext?: TaskAttemptContext;
   prompt: string;
   promptTemplate?: string; // Custom prompt template path
   startedAt: string;
@@ -1142,6 +1375,9 @@ interface RalphState {
   agent: AgentType;
   rotation?: string[];
   rotationIndex?: number;
+  codexGoalMode?: boolean;
+  codexBackend?: CodexBackend;
+  codexGoalForceNative?: boolean;
 }
 
 // Create or update state
@@ -1352,6 +1588,13 @@ async function promptUser(question: string): Promise<string> {
  * - {{completion_promise}} - The completion promise text
  * - {{abort_promise}} - The abort promise text (if configured)
  * - {{task_promise}} - The task promise text (for tasks mode)
+ * - {{task_min_iterations}} - Minimum Ralph iterations per top-level task (for tasks mode)
+ * - {{task_id}} - Current selected top-level task id when task-min tracking is active
+ * - {{task_text}} - Current selected top-level task text when task-min tracking is active
+ * - {{task_attempt}} - Current selected task attempt count when task-min tracking is active
+ * - {{task_min_required}} - Required attempts for the selected task or configured task minimum
+ * - {{task_can_complete}} - Whether the selected task has met its task minimum
+ * - {{task_gate_instruction}} - Ready-to-embed task-min guidance for custom templates
  * - {{context}} - Any additional context added mid-loop
  * - {{tasks}} - Task list content (for tasks mode)
  */
@@ -1373,6 +1616,8 @@ function loadCustomPromptTemplate(templatePath: string, state: RalphState): stri
       tasksContent = readFileSync(tasksPath, "utf-8");
     }
 
+    const taskTemplateContext = getTaskAttemptTemplateContext(state);
+
     // Replace variables
     template = template
       .replace(/\{\{iteration\}\}/g, String(state.iteration))
@@ -1382,6 +1627,13 @@ function loadCustomPromptTemplate(templatePath: string, state: RalphState): stri
       .replace(/\{\{completion_promise\}\}/g, state.completionPromise)
       .replace(/\{\{abort_promise\}\}/g, state.abortPromise || "")
       .replace(/\{\{task_promise\}\}/g, state.taskPromise)
+      .replace(/\{\{task_min_iterations\}\}/g, String(state.taskMinIterations ?? 1))
+      .replace(/\{\{task_id\}\}/g, taskTemplateContext.task_id)
+      .replace(/\{\{task_text\}\}/g, taskTemplateContext.task_text)
+      .replace(/\{\{task_attempt\}\}/g, taskTemplateContext.task_attempt)
+      .replace(/\{\{task_min_required\}\}/g, taskTemplateContext.task_min_required)
+      .replace(/\{\{task_can_complete\}\}/g, taskTemplateContext.task_can_complete)
+      .replace(/\{\{task_gate_instruction\}\}/g, taskTemplateContext.task_gate_instruction)
       .replace(/\{\{context\}\}/g, context)
       .replace(/\{\{tasks\}\}/g, tasksContent);
 
@@ -1492,11 +1744,26 @@ Create .ralph/ralph-tasks.md with your task list, or use \`ralph --add-task "des
   try {
     const tasksContent = readFileSync(tasksPath, "utf-8");
     const tasks = parseTasks(tasksContent);
+    const taskMin = state.taskMinIterations ?? 1;
+    const ledger = loadTaskRunLedger();
+    const selectedIndex = state.taskAttemptContext
+      ? tasks.findIndex((_, index) => getTaskId(tasks, index) === state.taskAttemptContext?.id)
+      : findTaskIndexForIteration(tasks, ledger, taskMin);
+    const selectedTask = selectedIndex >= 0 ? tasks[selectedIndex] : null;
     const currentTask = findCurrentTask(tasks);
     const nextTask = findNextTask(tasks);
 
     let taskInstructions = "";
-    if (currentTask) {
+    if (state.taskAttemptContext && selectedTask) {
+      const c = state.taskAttemptContext;
+      const canComplete = c.attempt >= c.required;
+      const completedEarly = c.wasCompleteBeforeAttempt && !canComplete;
+      taskInstructions = `
+🔄 CURRENT TASK: "${selectedTask.text}"
+   Task minimum iterations: ${c.attempt}/${c.required}${completedEarly ? " (already marked [x], but more verification rounds are required)" : ""}.
+   Focus on this top-level task until its minimum Ralph iteration count is satisfied.
+   ${canComplete ? `This task may remain or be marked [x] when verified. Output <promise>${state.taskPromise}</promise> when this task is complete.` : "Do NOT mark this task [x] yet and do NOT advance to a later task; continue implementation or verification for this task."}`;
+    } else if (currentTask) {
       taskInstructions = `
 🔄 CURRENT TASK: "${currentTask.text}"
    Focus on completing this specific task.
@@ -1507,9 +1774,14 @@ Create .ralph/ralph-tasks.md with your task list, or use \`ralph --add-task "des
    Mark as [/] in .ralph/ralph-tasks.md before starting.
    When done: Mark as [x] and output <promise>${state.taskPromise}</promise>`;
     } else if (allTasksComplete(tasks)) {
-      taskInstructions = `
+      const minimumGate = taskMinimumStatus(tasksContent, taskMin);
+      taskInstructions = minimumGate.passed ? `
 ✅ ALL TASKS COMPLETE!
-   Output <promise>${state.completionPromise}</promise> to finish.`;
+   Output <promise>${state.completionPromise}</promise> to finish.` : `
+🔄 TASK MINIMUM ITERATIONS NOT MET
+   All checkboxes may be complete, but these top-level tasks still need Ralph iterations:
+${minimumGate.blockers.join("\n")}
+   Continue focused verification and do not output <promise>${state.completionPromise}</promise> yet.`;
     } else {
       taskInstructions = `
 📋 No tasks found. Add tasks to .ralph/ralph-tasks.md or use \`ralph --add-task\``;
@@ -1529,8 +1801,8 @@ ${taskInstructions}
 2. Mark the task as [/] in ralph-tasks.md before starting.
 3. Complete the task.
 4. Mark as [x] when verified complete.
-5. Output <promise>${state.taskPromise}</promise> to move to the next task.
-6. Only output <promise>${state.completionPromise}</promise> when ALL tasks are [x].
+5. Output <promise>${state.taskPromise}</promise> only after the current top-level task is verified and has met any task-minimum iteration requirement.
+6. Only output <promise>${state.completionPromise}</promise> when ALL tasks are [x] and every top-level task has met its task-minimum iteration requirement.
 
 ---
 `;
@@ -1541,6 +1813,101 @@ ${taskInstructions}
 Unable to read .ralph/ralph-tasks.md
 `;
   }
+}
+
+
+function detectCodexBackend(agent: AgentConfig): CodexBackend {
+  const command = agent.command.toLowerCase();
+  if (command.includes("omx") || command.includes("oh-my-codex")) return "omx";
+  return "codex";
+}
+
+function resolveCodexBackend(input: string, agent: AgentConfig): CodexBackend {
+  if (input === "codex" || input === "omx") return input;
+  return detectCodexBackend(agent);
+}
+
+function codexGoalsFeatureEnabled(): boolean {
+  const codexPath = Bun.which(resolveCommand("codex", process.env.RALPH_CODEX_BINARY));
+  if (!codexPath) return false;
+  try {
+    const result = Bun.spawnSync([codexPath, "features", "list"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env },
+    });
+    const output = `${new TextDecoder().decode(result.stdout)}\n${new TextDecoder().decode(result.stderr)}`;
+    if (/^goals\s+\S+\s+true\b/m.test(output)) return true;
+  } catch {}
+
+  const configPath = join(process.env.CODEX_HOME || join(process.env.HOME || "", ".codex"), "config.toml");
+  try {
+    const config = readFileSync(configPath, "utf-8");
+    return /^\s*goals\s*=\s*true\s*$/m.test(config);
+  } catch {
+    return false;
+  }
+}
+
+function buildNativeCodexGoalObjective(promptText: string, state: RalphState): string {
+  return `You are running inside a single Ralph iteration of open-ralph-wiggum.\nDo not rely on any prior chat history or compacted context.\nTreat only the current repository files, git status, .harness files, progress files, .ralph state, and test logs as the source of truth.\nCross-iteration state must be written to the filesystem; prefer .harness/progress.md, .ralph/codex-goal-ledger.jsonl, any existing project progress file, and git diff.\n\nComplete the following objective:\n${promptText}\n\nBefore finishing you must:\n1. Inspect the current repository state.\n2. Read the relevant files.\n3. Make the necessary code or documentation changes.\n4. Run the project's existing tests or the checks requested by the user.\n5. If something fails, write a progress file the next Ralph iteration can use, e.g. .harness/progress.md, .ralph/codex-goal-ledger.jsonl, or an existing project progress file.\n6. Only output <promise>${state.completionPromise}</promise> when the work is genuinely complete.`;
+}
+
+function buildSimulatedCodexGoalPrompt(promptText: string, state: RalphState): string {
+  return `You are now simulating Codex goal mode.\nThis is not native /goal, but you must behave as a goal loop would.\nYou are inside a single Ralph iteration of open-ralph-wiggum.\nDo not rely on prior chat history or compacted context.\nTreat only the current repository files, git status, .harness files, progress files, .ralph state, and test logs as the source of truth.\nCross-iteration state must be written to the filesystem; prefer .harness/progress.md, .ralph/codex-goal-ledger.jsonl, any existing project progress file, and git diff.\n\nObjective:\n${promptText}\n\nRules:\n1. First understand the objective and its acceptance criteria.\n2. Review the current git diff and project state.\n3. Continue advancing the unfinished work.\n4. Run the tests or checks.\n5. If something fails, record the failure reason, what you tried, and a suggestion for the next iteration in .harness/progress.md, .ralph/codex-goal-ledger.jsonl, or an existing project progress file.\n6. If it succeeds, output <promise>${state.completionPromise}</promise>.\n7. Do not output the completion promise early just because part of the work is done.`;
+}
+
+function nativeGoalEvidenceDetected(output: string): boolean {
+  return /Goal usage:|Goal set|Active goal|Working toward goal|get_goal|create_goal|update_goal/i.test(output);
+}
+
+function buildCodexGoalInvocation(params: {
+  backend: CodexBackend;
+  nativeGoal: boolean;
+  promptText: string;
+  state: RalphState;
+  model: string;
+  allowAllPermissions: boolean;
+  extraFlags: string[];
+}): CodexGoalInvocation {
+  const promptMode: CodexGoalPromptMode = params.nativeGoal ? "native" : "simulated";
+  const objective = params.nativeGoal
+    ? `/goal ${buildNativeCodexGoalObjective(params.promptText, params.state)}`
+    : buildSimulatedCodexGoalPrompt(params.promptText, params.state);
+
+  const command = params.backend === "omx"
+    ? resolveCommand("omx", process.env.OMX_RALPH_OMX_BIN)
+    : resolveCommand("codex", process.env.RALPH_CODEX_BINARY);
+
+  const args = ["exec"];
+  if (params.model) args.push("--model", params.model);
+  if (params.allowAllPermissions) {
+    args.push("--sandbox", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox");
+  }
+  if (params.backend === "omx") {
+    const reasoning = process.env.OMX_RALPH_REASONING || "high";
+    if (reasoning) args.push("-c", `model_reasoning_effort=${reasoning}`);
+  }
+  if (params.extraFlags.length) args.push(...params.extraFlags);
+  args.push(objective);
+  return { command, args, promptMode, prompt: objective };
+}
+
+function appendCodexGoalLedger(entry: Record<string, unknown>): void {
+  try {
+    if (!existsSync(stateDir)) {
+      mkdirSync(stateDir, { recursive: true });
+    }
+    writeFileSync(codexGoalLedgerPath, `${JSON.stringify(entry)}\n`, { flag: "a" });
+  } catch {
+    // Ledger writing is best-effort and must not break the Ralph loop.
+  }
+}
+
+function shouldAttemptNativeCodexGoal(backend: CodexBackend): boolean {
+  if (codexGoalForceNative) return true;
+  if (backend === "omx") return true;
+  return codexGoalsFeatureEnabled();
 }
 
 /**
@@ -1606,6 +1973,12 @@ function collectToolSummaryFromText(text: string, agent: AgentConfig): Map<strin
   return counts;
 }
 
+function terminateProcess(proc: ReturnType<typeof Bun.spawn>, signal: NodeJS.Signals = "SIGTERM"): void {
+  try {
+    proc.kill(signal);
+  } catch {}
+}
+
 function printIterationSummary(params: {
   iteration: number;
   elapsedMs: number;
@@ -1651,6 +2024,7 @@ async function streamProcessOutput(
   let lastPrintedAt = Date.now();
   let lastActivityAt = Date.now();
   let lastToolSummaryAt = 0;
+  let activityTimedOut = false;
 
   const compactTools = options.compactTools;
   const parseToolOutput = options.agent.parseToolOutput;
@@ -1758,9 +2132,10 @@ async function streamProcessOutput(
       lastPrintedAt = now;
     }
     // Check for inactivity timeout
-    if (options.lastActivityTimeoutMs && options.lastActivityTimeoutMs > 0) {
+    if (!activityTimedOut && options.lastActivityTimeoutMs && options.lastActivityTimeoutMs > 0) {
       const inactivityMs = now - lastActivityAt;
       if (inactivityMs >= options.lastActivityTimeoutMs) {
+        activityTimedOut = true;
         const timeoutDuration = formatDuration(options.lastActivityTimeoutMs);
         console.log(`\n⏰ Inactivity timeout: no activity for ${timeoutDuration}. Restarting iteration...`);
         options.onActivityTimeout?.();
@@ -1908,11 +2283,15 @@ async function runRalphLoop(): Promise<void> {
     abortPromise = existingState.abortPromise ?? "";
     tasksMode = existingState.tasksMode;
     taskPromise = existingState.taskPromise;
+    taskMinIterations = existingState.taskMinIterations ?? 1;
     prompt = existingState.prompt;
     promptTemplatePath = existingState.promptTemplate ?? "";
     model = existingState.model;
     agentType = existingState.agent;
     rotation = existingState.rotation ?? null;
+    codexGoalMode = existingState.codexGoalMode ?? codexGoalMode;
+    codexBackendInput = existingState.codexBackend ?? codexBackendInput;
+    codexGoalForceNative = existingState.codexGoalForceNative ?? codexGoalForceNative;
     console.log(`🔄 Resuming Ralph loop from ${statePath}`);
   }
 
@@ -1974,6 +2353,7 @@ async function runRalphLoop(): Promise<void> {
     abortPromise: abortPromise || undefined,
     tasksMode,
     taskPromise,
+    taskMinIterations,
     prompt,
     promptTemplate: promptTemplatePath || undefined,
     startedAt: new Date().toISOString(),
@@ -1981,6 +2361,9 @@ async function runRalphLoop(): Promise<void> {
     agent: initialAgentType,
     rotation: rotation ?? undefined,
     rotationIndex: rotationActive ? 0 : undefined,
+    codexGoalMode: codexGoalMode || undefined,
+    codexBackend: codexGoalMode ? resolveCodexBackend(codexBackendInput, AGENTS[initialAgentType]) : undefined,
+    codexGoalForceNative: codexGoalForceNative || undefined,
   };
 
   if (!resuming) {
@@ -2017,6 +2400,9 @@ async function runRalphLoop(): Promise<void> {
   if (tasksMode) {
     console.log(`Tasks mode: ENABLED`);
     console.log(`Task promise: ${taskPromise}`);
+    if (taskMinIterations > 1) console.log(`Task min iterations: ${taskMinIterations}`);
+  } else if (taskMinIterations > 1) {
+    console.warn("Warning: --task-min-iterations has no effect unless --tasks is enabled");
   }
   console.log(`Min iterations: ${minIterations}`);
   console.log(`Max iterations: ${maxIterations > 0 ? maxIterations : "unlimited"}`);
@@ -2026,6 +2412,22 @@ async function runRalphLoop(): Promise<void> {
     console.log("OpenCode plugins: non-auth plugins disabled");
   }
   if (allowAllPermissions) console.log("Permissions: auto-approve all tools");
+  if (codexGoalMode) {
+    const backend = state.codexBackend ?? resolveCodexBackend(codexBackendInput, AGENTS[state.agent]);
+    state.codexBackend = backend;
+    console.log("[ralph] Codex goal mode requested");
+    console.log(`[ralph] Codex backend: ${backend}`);
+    if (shouldAttemptNativeCodexGoal(backend)) {
+      console.log(backend === "omx" ? "[ralph] Native Codex /goal: attempting through OMX" : "[ralph] Native Codex /goal: attempting");
+      console.log("[ralph] Native Codex /goal prompt will be sent as the first token of the final agent prompt");
+      if (backend === "omx") {
+        console.warn("[ralph] Native Codex /goal through OMX is not pre-confirmed; output will be checked for evidence");
+      }
+    } else {
+      console.warn("[ralph] Native Codex /goal feature was not confirmed");
+      console.warn("[ralph] Falling back to simulated goal prompt");
+    }
+  }
   console.log("");
   console.log("Starting loop... (Ctrl+C to stop)");
   console.log("═".repeat(68));
@@ -2063,11 +2465,7 @@ async function runRalphLoop(): Promise<void> {
 
     // Kill the subprocess if it's running
     if (currentProc) {
-      try {
-        currentProc.kill();
-      } catch {
-        // Process may have already exited
-      }
+      terminateProcess(currentProc);
     }
 
     clearState();
@@ -2119,17 +2517,55 @@ async function runRalphLoop(): Promise<void> {
     }
     const agentConfig = AGENTS[currentAgent];
 
+    // Record the selected task attempt before prompt construction so the prompt
+    // can focus under-minimum tasks even if they were already checked [x].
+    state.taskAttemptContext = recordTaskAttemptForIteration(state);
+    if (state.taskAttemptContext) {
+      const c = state.taskAttemptContext;
+      console.log(`📋 Task iteration gate: ${c.text} (${c.attempt}/${c.required})`);
+    }
+
     // Build the prompt
     const fullPrompt = buildPrompt(state, agentConfig);
     const iterationStart = Date.now();
 
     try {
       // Build command arguments (permission flags are handled inside buildArgs)
-      const cmdArgs = agentConfig.buildArgs(fullPrompt, currentModel, {
-        allowAllPermissions,
-        extraFlags: extraAgentFlags,
-        streamOutput,
-      });
+      let command = agentConfig.command;
+      let cmdArgs: string[];
+      let codexGoalPromptMode: CodexGoalPromptMode | null = null;
+      if (codexGoalMode && currentAgent === "codex") {
+        const backend = state.codexBackend ?? resolveCodexBackend(codexBackendInput, agentConfig);
+        state.codexBackend = backend;
+        const nativeGoal = shouldAttemptNativeCodexGoal(backend);
+        const invocation = buildCodexGoalInvocation({
+          backend,
+          nativeGoal,
+          promptText: fullPrompt,
+          state,
+          model: currentModel,
+          allowAllPermissions,
+          extraFlags: extraAgentFlags,
+        });
+        command = invocation.command;
+        cmdArgs = invocation.args;
+        codexGoalPromptMode = invocation.promptMode;
+        appendCodexGoalLedger({
+          timestamp: new Date().toISOString(),
+          event: "iteration_started",
+          iteration: state.iteration,
+          backend,
+          promptMode: invocation.promptMode,
+          command: invocation.command,
+          promptStartsWithGoal: invocation.prompt.startsWith("/goal "),
+        });
+      } else {
+        cmdArgs = agentConfig.buildArgs(fullPrompt, currentModel, {
+          allowAllPermissions,
+          extraFlags: extraAgentFlags,
+          streamOutput,
+        });
+      }
 
       const env = agentConfig.buildEnv({
         filterPlugins: disablePlugins,
@@ -2138,7 +2574,7 @@ async function runRalphLoop(): Promise<void> {
 
       // Run agent using spawn for better argument handling
       // stdin is inherited so users can respond to permission prompts if needed
-      currentProc = Bun.spawn([agentConfig.command, ...cmdArgs], {
+      currentProc = Bun.spawn([command, ...cmdArgs], {
         cwd: process.cwd(),
         env,
         stdin: "inherit",
@@ -2165,7 +2601,8 @@ async function runRalphLoop(): Promise<void> {
           abortSignal: abortController.signal,
           lastActivityTimeoutMs,
           onActivityTimeout: () => {
-            try { proc.kill(); } catch {}
+            terminateProcess(proc);
+            abortController.abort();
           },
           onHeartbeatTimer: (timer) => {
             currentHeartbeatTimer = timer;
@@ -2195,20 +2632,48 @@ async function runRalphLoop(): Promise<void> {
 
       const combinedOutput = `${result}\n${stderr}`;
 
+      if (codexGoalMode && currentAgent === "codex" && codexGoalPromptMode === "native") {
+        const confirmed = nativeGoalEvidenceDetected(combinedOutput);
+        if (confirmed) {
+          console.log("[ralph] Native Codex /goal: confirmed");
+        } else {
+          console.warn("[ralph] Native Codex /goal was attempted but not confirmed in output");
+        }
+        appendCodexGoalLedger({
+          timestamp: new Date().toISOString(),
+          event: "native_goal_evidence",
+          iteration: state.iteration,
+          backend: state.codexBackend,
+          confirmed,
+        });
+      }
+
       // For agents using stream-json, extract display text before checking completion
       const completionCheckText = extractAgentCompletionText(result, agentConfig.type);
 
       const completionSignalDetected = checkCompletion(completionCheckText, completionPromise, result);
       const abortDetected = abortPromise ? checkCompletion(completionCheckText, abortPromise, result) : false;
-      const taskCompletionDetected = tasksMode ? checkCompletion(completionCheckText, taskPromise, result) : false;
+      let taskCompletionDetected = tasksMode ? checkCompletion(completionCheckText, taskPromise, result) : false;
+      const taskGateCompletion = taskCompletionDetected ? { satisfied: false } : taskCompletionSatisfiedByTaskGate(state);
+      if (taskGateCompletion.satisfied) {
+        taskCompletionDetected = true;
+      }
 
       let completionDetected = completionSignalDetected;
       if (tasksMode && completionSignalDetected) {
         let tasksGatePassed = false;
+        let warnedReason = false;
         try {
           if (existsSync(tasksPath)) {
             const tasksContent = readFileSync(tasksPath, "utf-8");
-            tasksGatePassed = tasksMarkdownAllComplete(tasksContent);
+            const checkboxGatePassed = tasksMarkdownAllComplete(tasksContent);
+            const minimumGate = taskMinimumStatus(tasksContent, state.taskMinIterations ?? 1);
+            tasksGatePassed = checkboxGatePassed && minimumGate.passed;
+            if (checkboxGatePassed && !minimumGate.passed) {
+              console.warn(`\n⚠️  Completion promise ignored: task minimum iterations not met.`);
+              console.warn(minimumGate.blockers.join("\n"));
+              warnedReason = true;
+            }
           }
         } catch {
           tasksGatePassed = false;
@@ -2216,7 +2681,9 @@ async function runRalphLoop(): Promise<void> {
 
         if (!tasksGatePassed) {
           completionDetected = false;
-          console.warn(`\n⚠️  Completion promise ignored: tasks file still has incomplete items.`);
+          if (!warnedReason) {
+            console.warn(`\n⚠️  Completion promise ignored: tasks file still has incomplete items.`);
+          }
         }
       }
 
@@ -2385,8 +2852,24 @@ async function runRalphLoop(): Promise<void> {
 
       // Check for task completion (tasks mode only)
       if (taskCompletionDetected && !completionDetected) {
-        console.log(`\n🔄 Task completion detected: <promise>${taskPromise}</promise>`);
-        console.log(`   Moving to next task in iteration ${state.iteration + 1}...`);
+        if (taskGateCompletion.satisfied) {
+          console.log(`
+🔄 Task completion satisfied by task ledger: "${taskGateCompletion.taskText}" is [x] and met task minimum iterations.`);
+        } else {
+          console.log(`
+🔄 Task completion detected: <promise>${taskPromise}</promise>`);
+        }
+        if (state.tasksMode && state.taskMinIterations > 1 && existsSync(tasksPath)) {
+          const minimumGate = taskMinimumStatus(readFileSync(tasksPath, "utf-8"), state.taskMinIterations);
+          if (!minimumGate.passed) {
+            console.log(`   Continuing because task minimum iterations are not yet met.`);
+            console.log(minimumGate.blockers.join("\n"));
+          } else {
+            console.log(`   Moving to next task in iteration ${state.iteration + 1}...`);
+          }
+        } else {
+          console.log(`   Moving to next task in iteration ${state.iteration + 1}...`);
+        }
       }
 
       // Check for full completion
@@ -2456,11 +2939,7 @@ async function runRalphLoop(): Promise<void> {
       
       // Kill subprocess if still running to prevent orphaned processes
       if (currentProc) {
-        try {
-          currentProc.kill();
-        } catch {
-          // Process may have already exited
-        }
+        terminateProcess(currentProc);
         currentProc = null;
       }
       console.error(`\n❌ Error in iteration ${state.iteration}:`, error);

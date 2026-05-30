@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Adapter for Open Ralph Wiggum's built-in `codex` args template.
+# Open Ralph calls this as if it were `codex`:
+#   omx-codex-exec-for-ralph exec --model gpt-5.5 --full-auto <prompt>
+# This adapter runs the iteration through OMX instead:
+#   omx exec --sandbox danger-full-access -c model_reasoning_effort=high ... <prompt>
+
+find_omx() {
+  if [[ -n "${OMX_RALPH_OMX_BIN:-}" ]]; then
+    printf '%s\n' "$OMX_RALPH_OMX_BIN"
+  elif command -v omx >/dev/null 2>&1; then
+    command -v omx
+  elif [[ -x /opt/homebrew/bin/omx ]]; then
+    printf '%s\n' /opt/homebrew/bin/omx
+  else
+    return 1
+  fi
+}
+
+OMX_BIN="$(find_omx || true)"
+DEFAULT_SANDBOX="${OMX_RALPH_SANDBOX:-danger-full-access}"
+DEFAULT_REASONING="${OMX_RALPH_REASONING:-high}"
+
+if [[ -z "$OMX_BIN" || ! -x "$OMX_BIN" ]]; then
+  echo "[omx-codex-exec-for-ralph] OMX binary not executable. Set OMX_RALPH_OMX_BIN=/path/to/omx or add omx to PATH." >&2
+  exit 127
+fi
+
+args=("$@")
+
+# Open Ralph's codex template starts with `exec`; OMX also needs `exec`, so
+# consume the template subcommand to avoid `omx exec exec`.
+if [[ ${#args[@]} -gt 0 && "${args[0]}" == "exec" ]]; then
+  args=("${args[@]:1}")
+fi
+
+out=()
+has_sandbox=0
+has_reasoning=0
+skip_next=0
+
+for ((i=0; i<${#args[@]}; i++)); do
+  if [[ "$skip_next" -eq 1 ]]; then
+    skip_next=0
+    continue
+  fi
+
+  arg="${args[$i]}"
+  case "$arg" in
+    --full-auto|--dangerously-bypass-approvals-and-sandbox)
+      # Preserve madmax-like behavior through an explicit sandbox flag below.
+      ;;
+    --sandbox|-s)
+      has_sandbox=1
+      out+=("$arg")
+      if [[ $((i+1)) -lt ${#args[@]} ]]; then
+        out+=("${args[$((i+1))]}")
+        skip_next=1
+      fi
+      ;;
+    --sandbox=*)
+      has_sandbox=1
+      out+=("$arg")
+      ;;
+    -c|--config)
+      out+=("$arg")
+      if [[ $((i+1)) -lt ${#args[@]} ]]; then
+        next="${args[$((i+1))]}"
+        [[ "$next" == model_reasoning_effort=* ]] && has_reasoning=1
+        out+=("$next")
+        skip_next=1
+      fi
+      ;;
+    -c=*|--config=*)
+      [[ "$arg" == *model_reasoning_effort=* ]] && has_reasoning=1
+      out+=("$arg")
+      ;;
+    model_reasoning_effort=*)
+      has_reasoning=1
+      out+=("-c" "$arg")
+      ;;
+    *)
+      out+=("$arg")
+      ;;
+  esac
+done
+
+prefix=("exec")
+if [[ "$has_sandbox" -eq 0 ]]; then
+  prefix+=("--sandbox" "$DEFAULT_SANDBOX")
+fi
+if [[ -n "$DEFAULT_REASONING" && "$has_reasoning" -eq 0 ]]; then
+  prefix+=("-c" "model_reasoning_effort=$DEFAULT_REASONING")
+fi
+
+if [[ "${RALPH_OMX_SHIM_DEBUG:-}" == "1" ]]; then
+  printf '[omx-codex-exec-for-ralph] exec:' >&2
+  printf ' %q' "$OMX_BIN" "${prefix[@]}" "${out[@]}" >&2
+  printf '\n' >&2
+fi
+
+exec "$OMX_BIN" "${prefix[@]}" "${out[@]}"

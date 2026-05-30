@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Launch Open Ralph's normal loop while forcing the built-in `codex` agent to be
+# selected. The matching agents.json override routes that codex invocation
+# through omx-codex-exec-for-ralph.
+
+resolve_self() {
+  local source="$1"
+  while [ -L "$source" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
+    source="$(readlink "$source")"
+    [[ "$source" != /* ]] && source="$dir/$source"
+  done
+  cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd
+}
+
+SCRIPT_DIR="$(resolve_self "${BASH_SOURCE[0]}")"
+CONFIG_ENV="${RALPH_OMX_ENV_FILE:-$HOME/.config/open-ralph-wiggum/omx.env}"
+if [[ -f "$CONFIG_ENV" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONFIG_ENV"
+fi
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." >/dev/null 2>&1 && pwd)"
+MODEL="${RALPH_OMX_MODEL:-gpt-5.5}"
+
+find_bun() {
+  if [[ -n "${BUN_BIN:-}" ]]; then
+    printf '%s\n' "$BUN_BIN"
+  elif command -v bun >/dev/null 2>&1; then
+    command -v bun
+  elif [[ -x "$HOME/.bun/bin/bun" ]]; then
+    printf '%s\n' "$HOME/.bun/bin/bun"
+  else
+    return 1
+  fi
+}
+
+find_ralph_bin() {
+  if [[ -n "${RALPH_OPEN_BIN:-}" ]]; then
+    printf '%s\n' "$RALPH_OPEN_BIN"
+  elif [[ -f "$REPO_ROOT/bin/ralph.js" ]]; then
+    printf '%s\n' "$REPO_ROOT/bin/ralph.js"
+  elif [[ -n "${RALPH_OPEN_RALPH_DIR:-}" && -f "$RALPH_OPEN_RALPH_DIR/bin/ralph.js" ]]; then
+    printf '%s\n' "$RALPH_OPEN_RALPH_DIR/bin/ralph.js"
+  elif [[ -f "$PWD/bin/ralph.js" ]]; then
+    printf '%s\n' "$PWD/bin/ralph.js"
+  else
+    return 1
+  fi
+}
+
+RALPH_BIN="$(find_ralph_bin || true)"
+if [[ -z "$RALPH_BIN" || ! -f "$RALPH_BIN" ]]; then
+  echo "[ralph-omx] Open Ralph entrypoint not found." >&2
+  echo "[ralph-omx] Set RALPH_OPEN_BIN=/path/to/bin/ralph.js or install this wrapper as a symlink from contrib/omx." >&2
+  exit 127
+fi
+
+BUN="$(find_bun || true)"
+if [[ -z "$BUN" || ! -x "$BUN" ]]; then
+  echo "[ralph-omx] Bun not executable. Set BUN_BIN=/path/to/bun or install Bun." >&2
+  exit 127
+fi
+
+# Keep the Open Ralph selector flags before a user-provided `--` backend
+# passthrough separator. This preserves `ralph-omx ... -- -c foo=bar` while
+# still forcing the Open Ralph loop to use the built-in codex agent slot.
+ralph_args=()
+backend_args=()
+saw_separator=0
+for arg in "$@"; do
+  if [[ "$saw_separator" -eq 0 && "$arg" == "--" ]]; then
+    saw_separator=1
+    continue
+  fi
+  if [[ "$saw_separator" -eq 0 ]]; then
+    ralph_args+=("$arg")
+  else
+    backend_args+=("$arg")
+  fi
+done
+
+cmd=("$BUN" "$RALPH_BIN" "${ralph_args[@]}" --agent codex --model "$MODEL")
+if [[ "$saw_separator" -eq 1 ]]; then
+  cmd+=(-- "${backend_args[@]}")
+fi
+
+if [[ "${RALPH_OMX_SHIM_DEBUG:-}" == "1" ]]; then
+  printf '[ralph-omx] exec:' >&2
+  printf ' %q' "${cmd[@]}" >&2
+  printf '\n' >&2
+fi
+
+exec "${cmd[@]}"

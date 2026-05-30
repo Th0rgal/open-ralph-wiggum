@@ -178,6 +178,11 @@ ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise>
 ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
   --agent codex --model gpt-5-codex --max-iterations 5
 
+# Use Codex goal mode through OMX: Ralph owns cross-iteration retries, /goal owns one iteration
+RALPH_CODEX_GOAL=1 RALPH_CODEX_BACKEND=omx \
+ralph "Complete the task described in .harness/goal.md. Output <promise>COMPLETE</promise> when everything passes." \
+  --agent codex --max-iterations 5
+
 # Use Copilot CLI
 ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
   --agent copilot --max-iterations 5
@@ -200,6 +205,11 @@ Configure agent binaries with these environment variables:
 | `RALPH_OPENCODE_BINARY` | Path to OpenCode CLI | `"opencode"` |
 | `RALPH_CLAUDE_BINARY` | Path to Claude Code CLI | `"claude"` |
 | `RALPH_CODEX_BINARY` | Path to Codex CLI | `"codex"` |
+| `RALPH_CODEX_GOAL` | Enable Codex goal mode for `--agent codex` (`1`, `true`, `yes`, `on`) | unset |
+| `RALPH_CODEX_BACKEND` | Goal-mode backend: `codex` or `omx` | detected from configured codex command |
+| `RALPH_CODEX_GOAL_NATIVE` | Force native `/goal` attempt even when support is not pre-confirmed | unset |
+| `OMX_RALPH_OMX_BIN` | Path to OMX CLI when `RALPH_CODEX_BACKEND=omx` | `"omx"` |
+| `OMX_RALPH_REASONING` | `model_reasoning_effort` passed to `omx exec` in goal mode | `"high"` |
 | `RALPH_COPILOT_BINARY` | Path to Copilot CLI | `"copilot"` |
 | `RALPH_CURSOR_AGENT_BINARY` | Path to Cursor Agent CLI | `"cursor-agent"` |
 | `RALPH_QWEN_CODE_BINARY` | Path to Qwen Code CLI | `"qwen"` |
@@ -215,11 +225,15 @@ ralph "<prompt>" [options]
 
 Options:
   --agent AGENT            AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent, qwen-code
+  --codex-goal             Run Codex iterations in goal mode; final Codex/OMX prompt starts with /goal
+  --codex-backend BACKEND  Backend for --codex-goal: codex or omx (default: detect)
+  --codex-goal-native      Force a native /goal attempt even when backend support is unconfirmed
   --min-iterations N       Minimum iterations before completion allowed (default: 1)
   --max-iterations N       Stop after N iterations (default: unlimited)
   --completion-promise T   Text that signals completion (default: COMPLETE)
   --abort-promise TEXT     Phrase that signals early abort (e.g., precondition failed)
   --tasks, -t              Enable Tasks Mode for structured task tracking
+  --task-min-iterations N   Require each top-level task to receive N Ralph iterations before completion (default: 1)
   --task-promise T         Text that signals task completion (default: READY_FOR_NEXT_TASK)
   --model MODEL            Model to use (agent-specific)
   --rotation LIST          Agent/model rotation for each iteration (comma-separated)
@@ -238,6 +252,30 @@ Options:
   --help                   Show help
 ```
 
+### Codex / OMX Goal Mode
+
+`--codex-goal` is an opt-in mode for `--agent codex`. Open Ralph still owns the outer loop: max iterations, process restarts, promise detection, `.ralph/ralph-history.json`, git/file-system state, and optional auto-commits. Inside each Ralph iteration, the Codex backend receives a final prompt whose first token is `/goal`, so Codex goal mode can own the single-session push for that iteration.
+
+```bash
+ralph \
+  "Complete the task in .harness/goal.md. Run .harness/checks.sh. Output <promise>COMPLETE</promise> when everything passes." \
+  --agent codex \
+  --codex-goal \
+  --codex-backend omx \
+  --max-iterations 5
+```
+
+Equivalent environment form:
+
+```bash
+RALPH_CODEX_GOAL=1 RALPH_CODEX_BACKEND=omx ralph \
+  "Complete the task in .harness/goal.md. Run .harness/checks.sh. Output <promise>COMPLETE</promise> when everything passes." \
+  --agent codex \
+  --max-iterations 5
+```
+
+Goal-mode iterations write a small durable audit ledger to `.ralph/codex-goal-ledger.jsonl`. This is intentionally file-system state, not Codex thread state, so later Ralph iterations can start fresh while retaining repo-native progress evidence. If native `/goal` cannot be pre-confirmed, Ralph prints an explicit warning; simulated fallback is used only when native Codex goal support is not available for the selected backend.
+
 ### Tasks Mode
 
 Tasks Mode allows you to break complex projects into smaller, manageable tasks. Ralph works on one task at a time and tracks progress in a markdown file.
@@ -248,6 +286,9 @@ ralph "Build a complete web application" --tasks --max-iterations 20
 
 # Custom task completion signal
 ralph "Multi-feature project" --tasks --task-promise "TASK_DONE"
+
+# Require each top-level task to receive three Ralph iterations before task/final completion
+ralph "Multi-feature project" --tasks --task-min-iterations 3 --max-iterations 20
 ```
 
 #### Task Management Commands
@@ -270,9 +311,11 @@ ralph --status
 
 1. **Task File**: Tasks are stored in `.ralph/ralph-tasks.md`
 2. **One Task Per Iteration**: Ralph focuses on a single task to reduce confusion
-3. **Automatic Progression**: When a task completes (`<promise>READY_FOR_NEXT_TASK</promise>`), Ralph moves to the next
-4. **Persistent State**: Tasks survive loop restarts
-5. **Focused Context**: Smaller contexts per iteration reduce costs and improve reliability
+3. **Automatic Progression**: When a task completes (`<promise>READY_FOR_NEXT_TASK</promise>`), Ralph moves to the next eligible task
+4. **Task Minimum Iterations**: `--task-min-iterations N` requires every top-level task to receive N Ralph outer-loop iterations before task or final completion is accepted. This is separate from global `--min-iterations`, which gates the whole run.
+5. **Task Ledger Fallback**: With task minimums enabled, if the selected top-level task is already `[x]` with all subtasks `[x]` after its required iterations, Ralph advances from the task ledger even if the agent forgets to emit `READY_FOR_NEXT_TASK`
+6. **Persistent State**: Tasks survive loop restarts; per-task attempt counts are stored in `.ralph/ralph-task-runs.json` when task minimums are enabled
+7. **Focused Context**: Smaller contexts per iteration reduce costs and improve reliability
 
 Task status indicators:
 - `[ ]` - Not started
@@ -310,6 +353,13 @@ ralph "Build a REST API" --prompt-template ./my-template.md
 | `{{completion_promise}}` | Completion promise text (e.g., "COMPLETE") |
 | `{{abort_promise}}` | Abort promise text (if configured) |
 | `{{task_promise}}` | Task promise text (for tasks mode) |
+| `{{task_min_iterations}}` | Configured per-task minimum Ralph iterations (for tasks mode) |
+| `{{task_id}}` | Current selected top-level task id when task-min tracking is active |
+| `{{task_text}}` | Current selected top-level task text when task-min tracking is active |
+| `{{task_attempt}}` | Current selected task attempt count when task-min tracking is active |
+| `{{task_min_required}}` | Required attempts for the current selected task |
+| `{{task_can_complete}}` | `true` when the selected task has met its task minimum |
+| `{{task_gate_instruction}}` | Ready-to-embed task-min guidance for custom templates |
 | `{{context}}` | Additional context added mid-loop |
 | `{{tasks}}` | Task list content (for tasks mode) |
 
