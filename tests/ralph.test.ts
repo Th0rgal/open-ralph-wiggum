@@ -348,7 +348,6 @@ echo '<promise>COMPLETE</promise>'
           "--no-commit",
           "--no-questions",
           "--no-stream",
-          "--no-allow-all",
         ],
         cwd: workdir,
         env: {
@@ -369,7 +368,10 @@ echo '<promise>COMPLETE</promise>'
 
       expect(exitCode).toBe(0);
       expect(`${stdout}\n${stderr}`).toContain("[ralph] Native Codex /goal: attempting through OMX");
-      expect(readFileSync(capturedArgs, "utf-8").split("\n")[0]).toBe("exec");
+      const argsText = readFileSync(capturedArgs, "utf-8");
+      expect(argsText.split("\n")[0]).toBe("exec");
+      expect(argsText).toContain("--sandbox\ndanger-full-access");
+      expect(argsText).not.toContain("--dangerously-bypass-approvals-and-sandbox");
       expect(readFileSync(capturedPrompt, "utf-8").startsWith("/goal ")).toBe(true);
       expect(readFileSync(join(workdir, ".ralph", "codex-goal-ledger.jsonl"), "utf-8")).toContain('"promptStartsWithGoal":true');
     } finally {
