@@ -493,6 +493,101 @@ ralph --add-context "Try using the singleton pattern for config"
 
 Context is automatically consumed after one iteration.
 
+### Lifecycle Hooks
+
+Run custom bash scripts at lifecycle events. Hooks are auto-discovered from two scopes:
+
+- **Global**: `~/.config/open-ralph-wiggum/hooks/<event>/`
+- **Local**: `.ralph/hooks/<event>/` (in your project directory)
+
+#### Filename Convention
+
+```
+<priority>-<name>.sh
+```
+
+- Priority is a number (lower = runs first)
+- Example: `10-notify-slack.sh`, `20-log-metrics.sh`
+
+#### Priority Rules
+
+- Lower priority number runs first
+- Same priority across scopes: **local runs before global**
+- Same priority within same scope: **error at startup** (rename one hook)
+
+#### Lifecycle Events
+
+| Event | When it fires |
+|-------|---------------|
+| `loop-start` | After initialization, before first iteration |
+| `loop-end` | After loop exits (any reason) |
+| `iteration-start` | Before each agent invocation |
+| `iteration-end` | After each agent invocation completes |
+| `loop-resume` | When resuming from existing state |
+| `loop-abort` | When abort promise detected |
+| `loop-stall` | When stalling detected |
+| `loop-error` | When unhandled iteration error occurs |
+| `loop-cancel` | When SIGINT/SIGTERM received |
+
+#### Environment Variables
+
+Hooks receive context via environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `RALPH_EVENT` | Event name |
+| `RALPH_ITERATION` | Current iteration number |
+| `RALPH_AGENT` | Current agent type |
+| `RALPH_MODEL` | Current model name |
+| `RALPH_STATE_DIR` | Absolute path to state directory |
+| `RALPH_CWD` | Project working directory |
+| `RALPH_EXIT_CODE` | Agent exit code (iteration-end only) |
+| `RALPH_COMPLETION_DETECTED` | Whether completion was detected (iteration-end only) |
+| `RALPH_DURATION_MS` | Iteration duration in ms (iteration-end only) |
+| `RALPH_TOTAL_DURATION_MS` | Total loop duration in ms (loop-end only) |
+| `RALPH_END_REASON` | Why loop ended: `completion`, `max-iterations`, `abort`, `stall`, `cancel`, `error` (loop-end only) |
+| `RALPH_ERROR_MESSAGE` | Error message (loop-error only) |
+
+#### Example Hook
+
+```bash
+#!/bin/bash
+# .ralph/hooks/loop-end/10-notify.sh
+
+if [ "$RALPH_END_REASON" = "completion" ]; then
+   echo "✅ Loop completed after $RALPH_ITERATION iterations"
+   echo "   Total time: ${RALPH_TOTAL_DURATION_MS}ms"
+   # Send notification, trigger CI, etc.
+fi
+```
+
+#### CLI Commands
+
+```bash
+# List all discovered hooks
+ralph hooks list
+
+# List hooks for a specific event
+ralph hooks list --event loop-start
+
+# List available lifecycle events
+ralph hooks events
+
+# Disable all hooks for a run
+ralph "task" --no-hooks
+```
+
+#### Hook Output
+
+Hook stdout/stderr is printed to console with a prefix:
+
+```
+[hook:10-notify] ✅ Loop completed after 5 iterations
+[hook:20-log] Metrics saved to /tmp/metrics.json
+```
+
+Hook failures (non-zero exit) are logged as warnings but do NOT block the loop.
+
 ## Troubleshooting
 
 ### Plugin errors

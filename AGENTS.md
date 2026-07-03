@@ -217,3 +217,24 @@ This project is indexed by GitNexus as **open-ralph-wiggum** (3779 symbols, 5221
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## Lifecycle Hooks Architecture
+
+The hooks system (`src/lifecycle-hooks.ts`) enables bash-based extensibility at 9 lifecycle events.
+
+**Key files:**
+- `src/lifecycle-hooks.ts` — Core engine: discovery, validation, execution
+- `tests/lifecycle-hooks.test.ts` — Unit tests (21 tests)
+- `examples/hooks/` — Example hook scripts
+
+**Architecture:**
+- Hooks are bash scripts named `<priority>-<name>.sh`
+- Two scopes: global (`~/.config/open-ralph-wiggum/hooks/<event>/`) and local (`.ralph/hooks/<event>/`)
+- Priority ordering: ascending number, local-before-global for ties
+- Collision detection: same priority within same scope = fatal error at load
+- Execution: `spawnSync("bash", [hookPath])` with 30s timeout, output prefixed with `[hook:<name>]`
+- Failures: logged as warnings, never block the loop
+
+**Events:** `loop-start`, `loop-end`, `iteration-start`, `iteration-end`, `loop-resume`, `loop-abort`, `loop-stall`, `loop-error`, `loop-cancel`
+
+**CLI:** `ralph hooks list [--event <name>]`, `ralph hooks events`, `--no-hooks` flag

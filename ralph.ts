@@ -34,6 +34,7 @@ import {
 import { parseReviewConfig } from "./src/runtime-config";
 import type { ReviewConfig, ReviewGateState, ReviewVote } from "./src/types";
 import { parseGoalMd } from "./src/goal-parser";
+import { executeHooks, listAllHooks, formatHooksTable, type HookEnv, type LifecycleEvent, LIFECYCLE_EVENTS } from "./src/lifecycle-hooks";
 import { createInitialState as createGoalState, loadGoalState, saveGoalState, syncGoalStateAfterIteration } from "./src/goal-state";
 import { buildInventory, findNextActionableGoal } from "./src/goal-inventory";
 import { buildGoalPromptSection, formatGoalInventory, formatGoalStatus, scaffoldGoalMd, titleToSlug } from "./src/goal-prompt";
@@ -1296,6 +1297,7 @@ Options:
   --questions         Enable interactive question handling (default: enabled)
   --no-questions      Disable interactive question handling (agent will loop on questions)
   --no-plugins        Disable non-auth OpenCode plugins for this run (opencode only)
+  --no-hooks          Disable all lifecycle hooks for this run
    --stall-retries     Sleep and restart after all fallbacks are exhausted
    --stall-retry-minutes N  Minutes to sleep before restarting exhausted fallbacks (default: 15)
    --no-commit         Don't auto-commit after each iteration
@@ -2002,6 +2004,49 @@ Learn more: https://ghuntley.com/ralph/
       process.exit(0);
    }
 
+   // ── hooks subcommand ──────────────────────────────────────────────────
+   // Handle "ralph hooks list [--event <event>]"
+   if (args[0] === "hooks") {
+      const subCmd = args[1];
+      if (subCmd === "list") {
+         const eventIdx = args.indexOf("--event");
+         const eventFilter = eventIdx !== -1 ? args[eventIdx + 1] : undefined;
+
+         if (eventFilter && !LIFECYCLE_EVENTS.includes(eventFilter as LifecycleEvent)) {
+            console.error(`Error: Unknown event '${eventFilter}'`);
+            console.error(`Valid events: ${LIFECYCLE_EVENTS.join(", ")}`);
+            process.exit(1);
+         }
+
+         const allHooks = listAllHooks(process.cwd());
+
+         if (eventFilter) {
+            const filtered = new Map<LifecycleEvent, import("./src/lifecycle-hooks").HookEntry[]>();
+            const hooks = allHooks.get(eventFilter as LifecycleEvent);
+            if (hooks) filtered.set(eventFilter as LifecycleEvent, hooks);
+            console.log(formatHooksTable(filtered));
+         } else {
+            console.log(formatHooksTable(allHooks));
+         }
+         process.exit(0);
+      } else if (subCmd === "events") {
+         console.log("Available lifecycle events:");
+         for (const event of LIFECYCLE_EVENTS) {
+            console.log(`  ${event}`);
+         }
+         process.exit(0);
+      } else {
+         console.error("Usage: ralph hooks list [--event <event>]");
+         console.error("       ralph hooks events");
+         console.error("");
+         console.error("Commands:");
+         console.error("  list              List all discovered hooks");
+         console.error("  list --event E    List hooks for a specific event");
+         console.error("  events            List available lifecycle events");
+         process.exit(1);
+      }
+   }
+
    // Add context command
    const addContextIdx = args.indexOf("--add-context");
    if (addContextIdx !== -1) {
@@ -2283,6 +2328,7 @@ Learn more: https://ghuntley.com/ralph/
    let rotation: string[] | null = null;
    let autoCommit = true;
    let disablePlugins = false;
+   let disableHooks = false;
    let allowAllPermissions = true;
    let promptFile = "";
    let promptTemplatePath = ""; // Custom prompt template file
@@ -2622,6 +2668,8 @@ Learn more: https://ghuntley.com/ralph/
          autoCommit = false;
       } else if (arg === "--no-plugins") {
          disablePlugins = true;
+      } else if (arg === "--no-hooks") {
+         disableHooks = true;
       } else if (arg === "--allow-all") {
          allowAllPermissions = true;
       } else if (arg === "--no-allow-all") {
@@ -3970,6 +4018,8 @@ Unable to read ${currentTasksFileLabel()}
              console.log(`⚠️  Recovered stale active state from PID ${ownership.ownerPid}`);
           }
           console.log(`🔄 Resuming Ralph loop from ${statePath}`);
+          // Fire loop-resume hook
+          executeHooks({ event: "loop-resume", env: buildHookEnv("loop-resume"), cwd: process.cwd(), disabled: disableHooks });
        }
 
       if (tasksMode && completionPromise.trim() === taskPromise.trim()) {
@@ -4172,6 +4222,19 @@ Unable to read ${currentTasksFileLabel()}
          try { saveHistory(history); } catch { /* best-effort */ }
       }
 
+      // Helper to build hook environment
+      function buildHookEnv(event: LifecycleEvent, extra?: Partial<HookEnv>): HookEnv {
+         return {
+            RALPH_EVENT: event,
+            RALPH_ITERATION: String(state.iteration),
+            RALPH_AGENT: state.agent || agentType,
+            RALPH_MODEL: state.model || model,
+            RALPH_STATE_DIR: stateDir,
+            RALPH_CWD: process.cwd(),
+            ...extra,
+         };
+      }
+
       const promptPreview = prompt.replace(/\s+/g, " ").substring(0, 80) + (prompt.length > 80 ? "..." : "");
       if (promptSource) {
          console.log(`Task: ${promptSource}`);
@@ -4196,6 +4259,9 @@ Unable to read ${currentTasksFileLabel()}
       console.log("");
       console.log("Starting loop... (Ctrl+C to stop)");
       console.log("═".repeat(68));
+
+      // Fire loop-start hook
+      executeHooks({ event: "loop-start", env: buildHookEnv("loop-start"), cwd: process.cwd(), disabled: disableHooks });
 
       // Track current subprocess for cleanup on SIGINT
       let currentProc: ReturnType<typeof Bun.spawn> | null = null;
@@ -4254,6 +4320,8 @@ Unable to read ${currentTasksFileLabel()}
             clearPendingQuestions();
          }
          console.log("Loop cancelled.");
+         // Fire loop-cancel hook
+         executeHooks({ event: "loop-cancel", env: buildHookEnv("loop-cancel"), cwd: process.cwd(), disabled: disableHooks });
 
          // Use setImmediate to allow the abort event to propagate
          // then force exit. This is more reliable than process.exit()
@@ -4269,6 +4337,8 @@ Unable to read ${currentTasksFileLabel()}
             console.log(`║  Max iterations (${maxIterations}) reached. Loop stopped.`);
             console.log(`║  Total time: ${formatDurationLong(history.totalDurationMs)}`);
             console.log(`╚══════════════════════════════════════════════════════════════════╝`);
+            // Fire loop-end hook
+            executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "max-iterations" }), cwd: process.cwd(), disabled: disableHooks });
             clearState();
             clearPendingQuestions();
             // Keep history for analysis via --status
@@ -4279,6 +4349,9 @@ Unable to read ${currentTasksFileLabel()}
          const minInfo = minIterations > 1 && state.iteration < minIterations ? ` (min: ${minIterations})` : "";
          console.log(`\n🔄 Iteration ${state.iteration}${iterInfo}${minInfo}`);
          console.log("─".repeat(68));
+
+         // Fire iteration-start hook
+         executeHooks({ event: "iteration-start", env: buildHookEnv("iteration-start"), cwd: process.cwd(), disabled: disableHooks });
 
          // Capture context at start of iteration (to only clear what was consumed)
          const contextAtStart = loadContext();
@@ -4481,6 +4554,10 @@ Unable to read ${currentTasksFileLabel()}
                    } else {
                       // Stop action (default)
                       console.log(`\n🛑 Stopping loop due to stalling`);
+                      // Fire loop-stall hook
+                      executeHooks({ event: "loop-stall", env: buildHookEnv("loop-stall"), cwd: process.cwd(), disabled: disableHooks });
+                      // Fire loop-end hook
+                      executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "stall" }), cwd: process.cwd(), disabled: disableHooks });
                       state.active = false;
                       try { saveState(state); } catch { /* best-effort */ }
                       break;
@@ -4569,6 +4646,10 @@ Unable to read ${currentTasksFileLabel()}
                    } else {
                       // Stop action (default)
                       console.log(`\n🛑 Stopping loop due to stalling`);
+                      // Fire loop-stall hook
+                      executeHooks({ event: "loop-stall", env: buildHookEnv("loop-stall"), cwd: process.cwd(), disabled: disableHooks });
+                      // Fire loop-end hook
+                      executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "stall" }), cwd: process.cwd(), disabled: disableHooks });
                       state.active = false;
                       try { saveState(state); } catch { /* best-effort */ }
                       break;
@@ -4639,6 +4720,18 @@ Unable to read ${currentTasksFileLabel()}
                exitCode,
                completionDetected,
                snapshotBefore,
+            });
+
+            // Fire iteration-end hook
+            executeHooks({
+               event: "iteration-end",
+               env: buildHookEnv("iteration-end", {
+                  RALPH_EXIT_CODE: String(exitCode),
+                  RALPH_COMPLETION_DETECTED: String(completionDetected),
+                  RALPH_DURATION_MS: String(Date.now() - iterationStart),
+               }),
+               cwd: process.cwd(),
+               disabled: disableHooks,
             });
 
             // Goal mode: sync goal state after each iteration
@@ -4729,6 +4822,10 @@ Unable to read ${currentTasksFileLabel()}
                console.log(`║  Loop aborted after ${state.iteration} iteration(s)`);
                console.log(`║  Total time: ${formatDurationLong(history.totalDurationMs)}`);
                console.log(`╚══════════════════════════════════════════════════════════════════╝`);
+               // Fire loop-abort hook
+               executeHooks({ event: "loop-abort", env: buildHookEnv("loop-abort", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs) }), cwd: process.cwd(), disabled: disableHooks });
+               // Fire loop-end hook
+               executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "abort" }), cwd: process.cwd(), disabled: disableHooks });
                clearState();
                clearHistory();
                clearContext();
@@ -4829,6 +4926,8 @@ Unable to read ${currentTasksFileLabel()}
                          console.log(`\n╔══════════════════════════════════════════════════════════════════╗`);
                          console.log(`║  ✅ Review approved! Loop completing.`);
                          console.log(`╚══════════════════════════════════════════════════════════════════╝`);
+                         // Fire loop-end hook
+                         executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks });
                          const defaultStateDir = join(process.cwd(), ".ralph");
                          if (stateDirInput === defaultStateDir) {
                             clearState();
@@ -4858,6 +4957,8 @@ Unable to read ${currentTasksFileLabel()}
                       console.log(`║  Task completed in ${state.iteration} iteration(s)`);
                       console.log(`║  Total time: ${formatDurationLong(history.totalDurationMs)}`);
                       console.log(`╚══════════════════════════════════════════════════════════════════╝`);
+                      // Fire loop-end hook
+                      executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks });
                       const defaultStateDir = join(process.cwd(), ".ralph");
                       if (stateDirInput === defaultStateDir) {
                          clearState();
@@ -4877,6 +4978,8 @@ Unable to read ${currentTasksFileLabel()}
                   console.log(`   Continuing to iteration ${state.iteration + 1}...`);
                } else {
                   // Goal complete — clean up and exit
+                  // Fire loop-end hook
+                  executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks });
                   const defaultStateDir = join(process.cwd(), ".ralph");
                   if (stateDirInput === defaultStateDir) {
                      clearState();
@@ -4964,6 +5067,8 @@ Unable to read ${currentTasksFileLabel()}
                currentProc = null;
             }
             console.error(`\n❌ Error in iteration ${state.iteration}:`, error);
+            // Fire loop-error hook
+            executeHooks({ event: "loop-error", env: buildHookEnv("loop-error", { RALPH_ERROR_MESSAGE: String(error).substring(0, 500) }), cwd: process.cwd(), disabled: disableHooks });
             console.log("Continuing to next iteration...");
 
             // Track failed iteration in history to keep state/history in sync
