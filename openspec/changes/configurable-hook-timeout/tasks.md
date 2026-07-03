@@ -16,7 +16,7 @@
 
 - [x] 3.1 Add `hookTimeoutMs?: number` to parsed-args result type in `src/parse-args.ts`
 - [x] 3.2 Parse `--hook-timeout <ms>` (number, required value). Invalid → throw with clear message
-- [x] 3.3 In `ralph.ts` (and regen `bin/ralph.js` via `bun run build`), call `resolveHookTimeoutMs(parsed.hookTimeoutMs)` and pass result into the run-loop options that reach `executeHooks`
+- [x] 3.3 In `ralph.ts` (and regen `bin/ralph.js` via `bun build ralph.ts --outfile bin/ralph.js --target=bun`), call `resolveHookTimeoutMs(parsed.hookTimeoutMs)` and pass result into the run-loop options that reach `executeHooks`. NOTE: `bun run build` (package.json) produces the compiled `bin/ralph` binary used by integration tests — it does NOT regenerate `bin/ralph.js` (the npm entrypoint), which needs a separate `bun build ralph.ts --outfile bin/ralph.js --target=bun`.
 - [x] 3.4 Add `--hook-timeout <ms>` to CLI help text next to `--no-hooks`
 
 ## 4. Run-loop wiring
@@ -30,7 +30,7 @@
 - [x] 5.2 `tests/lifecycle-hooks.test.ts`: custom timeout forwarded to spawnSync (mock/spy)
 - [x] 5.3 New `tests/hook-timeout-config.test.ts`: `resolveHookTimeoutMs` — flag wins over env, env wins over default, invalid env warns+fallbacks, `<=0` env warns+fallbacks, invalid flag throws, `<=0` flag throws
 - [x] 5.4 `tests/lifecycle-hooks.test.ts`: timeout expiration still fail-soft (loop continues, warning logged)
-- [x] 5.5 Run `bun run build` then `bun test` — all green
+- [x] 5.5 Run `bun build ralph.ts --outfile bin/ralph.js --target=bun` (npm entrypoint) then `bun run build` (compiled binary) then `bun test` — all green
 
 ## 6. Docs
 

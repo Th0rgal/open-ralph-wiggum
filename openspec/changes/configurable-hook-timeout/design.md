@@ -60,7 +60,7 @@ Add `export const DEFAULT_HOOK_TIMEOUT_MS = 30000;` in `lifecycle-hooks.ts`. Use
 
 `parse-args.ts` — add `hookTimeoutMs?: number` to parsed result, parse `--hook-timeout <ms>`. Existing pattern: number-parsing flags already present (e.g. `--max-iterations`).
 
-`bin/ralph.js` help text — add `--hook-timeout <ms>` next to `--no-hooks`. Build step (`bun run build`) regenerates `bin/ralph.js` from `ralph.ts`.
+`bin/ralph.js` help text — add `--hook-timeout <ms>` next to `--no-hooks`. Regenerate the npm entrypoint with `bun build ralph.ts --outfile bin/ralph.js --target=bun` (NOT `bun run build`, which produces the compiled `bin/ralph` binary for integration tests).
 
 ### D5. README + AGENTS.md doc updates
 
@@ -72,7 +72,7 @@ README "Lifecycle Hooks" section: add a "Hook timeout" subsection with env var, 
 - **[Risk] Flag typo silently falls back (if we chose warn-only).** Mitigated by D2 — CLI flag typos throw.
 - **[Risk] Tests that rely on the 30s default break.** Mitigation: default unchanged; tests opt into the new option explicitly.
 - **[Trade-off] No per-hook granularity.** Accepted for MVP — global cap unblocks the 90% case. Per-hook can layer on later via a sidecar/frontmatter without breaking this contract.
-- **[Risk] `bin/ralph.js` is a compiled artifact.** Any change to `ralph.ts` flag parsing MUST be followed by `bun run build` or tests depending on `bin/ralph` break (per README "Build Prerequisites for Tests").
+- **[Risk] `bin/ralph.js` is a compiled artifact (npm entrypoint).** Any change to `ralph.ts` flag parsing MUST be followed by `bun build ralph.ts --outfile bin/ralph.js --target=bun` (regenerates `bin/ralph.js`) AND `bun run build` (regenerates the compiled `bin/ralph` binary used by integration tests) — two separate artifacts.
 
 ## Migration Plan
 
