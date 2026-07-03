@@ -89,8 +89,16 @@ describe("resolveHookTimeoutMs (configurable-hook-timeout)", () => {
    });
 
    test("fractional env value warns and falls back (must be integer)", () => {
-      process.env.RALPH_HOOK_TIMEOUT_MS = "30.5";
-      expect(resolveHookTimeoutMs(undefined)).toBe(DEFAULT_HOOK_TIMEOUT_MS);
+      const warnings: string[] = [];
+      const origWarn = console.warn;
+      console.warn = (...args: any[]) => { warnings.push(args.join(" ")); };
+      try {
+         process.env.RALPH_HOOK_TIMEOUT_MS = "30.5";
+         expect(resolveHookTimeoutMs(undefined)).toBe(DEFAULT_HOOK_TIMEOUT_MS);
+      } finally {
+         console.warn = origWarn;
+      }
+      expect(warnings.some(w => /RALPH_HOOK_TIMEOUT_MS/.test(w) && /30000/.test(w))).toBe(true);
    });
 
    test("invalid CLI flag value throws", () => {

@@ -64,6 +64,32 @@ function cleanup() {
    }
 }
 
+/**
+ * Clean stale state files at project-root `.ralph/` left by prior ralph runs
+ * (manual invocations, other test suites). These tests assert that Ralph
+ * does NOT pollute the default `.ralph/` when --state-dir is set, so a
+ * pre-existing file there causes a false negative.
+ */
+function cleanProjectRootDefaultState() {
+   const projectRoot = process.cwd();
+   const defaultStateDir = join(projectRoot, ".ralph");
+   for (const f of ["ralph-loop.state.json", "ralph-history.json"]) {
+      const p = join(defaultStateDir, f);
+      if (existsSync(p)) rmSync(p, { force: true });
+   }
+}
+
+/**
+ * Clean the `tests/tmp/` custom-state dirs these tests create.
+ * Without this, state accumulates across runs and can mask regressions.
+ */
+function cleanTestsTmpState() {
+   const tmpBase = join(process.cwd(), "tests", "tmp");
+   if (existsSync(tmpBase)) {
+      rmSync(tmpBase, { recursive: true, force: true });
+   }
+}
+
 function writeFakeAgentConfig() {
    writeFileSync(
       agentConfigPath,
@@ -97,10 +123,13 @@ describe("BUG: --state-dir after -- (passthrough separator) is ignored", () => {
    beforeEach(() => {
       assignPaths(mkdtempSync(join(tmpdir(), "ralph-state-dir-passthrough-")));
       writeFakeAgentConfig();
+      cleanProjectRootDefaultState();
+      cleanTestsTmpState();
    });
 
    afterEach(() => {
       cleanup();
+      cleanTestsTmpState();
    });
 
    /**

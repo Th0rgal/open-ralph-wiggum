@@ -8,7 +8,7 @@ The system SHALL allow the per-hook execution timeout to be configured per run, 
 2. Environment variable `RALPH_HOOK_TIMEOUT_MS`
 3. Built-in default of `30000` ms
 
-The resolved timeout SHALL apply uniformly to every hook executed during the run. The value MUST be a positive integer expressed in milliseconds. A value of `0` is invalid and MUST fall back to the default with a warning.
+The resolved timeout SHALL apply uniformly to every hook executed during the run. The value MUST be a positive integer expressed in milliseconds. A value of `0` (or negative / non-integer) is invalid. For the **environment variable** path, an invalid value MUST log a warning and fall back to the default; for the **CLI flag** path, an invalid value MUST exit non-zero with a parse error (see design D2 — CLI is an explicit user action, so typos fail loud and early).
 
 The timeout is enforced via the existing `spawnSync` kill mechanism; on timeout the hook is treated as a failed hook (existing fail-soft semantics) and the loop continues.
 
