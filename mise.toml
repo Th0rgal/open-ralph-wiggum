@@ -96,3 +96,6 @@ bun build ralph.ts --outfile bin/ralph.js --target bun
 cp bin/ralph.js ~/.local/bin/ralph-prod.js
 echo "Deployed: ~/.local/bin/ralph-prod.js"
 '''
+
+[tools]
+node = "22.22.2"
