@@ -106,6 +106,8 @@ export interface ExecuteHooksOptions {
    pipelineContext?: PipelineContext;
    /** Verbose hook logging */
    verbose?: boolean;
+   /** Per-hook execution timeout in ms (default: DEFAULT_HOOK_TIMEOUT_MS) */
+   hookTimeoutMs?: number;
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -117,6 +119,9 @@ const DEFAULT_GLOBAL_CONFIG_DIR = join(
 );
 
 const LOCAL_HOOKS_DIR = ".ralph/hooks";
+
+/** Default per-hook execution timeout (ms). Overridable via --hook-timeout / RALPH_HOOK_TIMEOUT_MS. */
+export const DEFAULT_HOOK_TIMEOUT_MS = 30000;
 
 /** Regex to parse priority from filename: <priority>-<name>.sh */
 const HOOK_FILENAME_RE = /^(\d+)-(.+)\.sh$/;
@@ -370,8 +375,10 @@ export function executeHooks(options: ExecuteHooksOptions): PipelineContext {
 
    if (hooks.length === 0) return pipelineContext;
 
+   const hookTimeoutMs = options.hookTimeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
+
    for (const hook of hooks) {
-      pipelineContext = runHook(hook, env, cwd, pipelineContext, verbose);
+      pipelineContext = runHook(hook, env, cwd, pipelineContext, hookTimeoutMs, verbose);
    }
 
    return pipelineContext;
@@ -386,6 +393,7 @@ function runHook(
    env: HookEnv,
    cwd: string,
    pipelineContext: PipelineContext,
+   hookTimeoutMs: number,
    verbose?: boolean
 ): PipelineContext {
    const prefix = `[hook:${hook.priority}-${hook.name}]`;
@@ -415,12 +423,14 @@ function runHook(
    }
 
    try {
+      const hookStart = Date.now();
       const result = spawnSync("bash", [hook.filePath], {
          cwd,
          env: hookEnv,
          encoding: "utf-8",
-         timeout: 30000, // 30s max per hook
+         timeout: hookTimeoutMs,
       });
+      const elapsed = Date.now() - hookStart;
 
       // D5: parse pipeline context from BOTH stdout and stderr. Spec requires
       // "All context blocks SHALL be filtered from printed output" — that
@@ -463,9 +473,19 @@ function runHook(
          console.warn(`${prefix} exited with code ${result.status}`);
       }
 
-      // Handle signal termination
+      // Handle signal termination. spawnSync sets signal='SIGTERM' both when
+      // the hook self-kills and when spawnSync itself enforces the timeout.
+      // Distinguish the two: on timeout spawnSync also sets error.code=ETIMEDOUT
+      // (Node >=14). Fall back to an elapsed heuristic if error is missing.
       if (result.signal) {
-         console.warn(`${prefix} killed by signal ${result.signal}`);
+         const errCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+         const timedOut = result.signal === "SIGTERM" &&
+            (errCode === "ETIMEDOUT" || elapsed >= hookTimeoutMs - 50);
+         if (timedOut) {
+            console.warn(`${prefix} timed out after ${hookTimeoutMs}ms`);
+         } else {
+            console.warn(`${prefix} killed by signal ${result.signal}`);
+         }
       }
 
       if (verbose) {
@@ -478,8 +498,6 @@ function runHook(
       return pipelineContext;
    }
 }
-
-// ── CLI Helpers ──────────────────────────────────────────────────────────────
 
 /**
  * Discover all hooks across all events for the `ralph hooks list` command.
