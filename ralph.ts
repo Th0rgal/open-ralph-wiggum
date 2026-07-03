@@ -2871,7 +2871,13 @@ Learn more: https://ghuntley.com/ralph/
    }
 
    // Resolve per-hook timeout (throws on bad CLI flag, warns on bad env).
-   const hookTimeoutMs = resolveHookTimeoutMs(hookTimeoutMsFlag);
+   let hookTimeoutMs: number;
+   try {
+      hookTimeoutMs = resolveHookTimeoutMs(hookTimeoutMsFlag);
+   } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+   }
 
    if (stallRetryMinutes < 0) {
       console.error(`Error: --stall-retry-minutes (${stallRetryMinutes}) cannot be negative`);

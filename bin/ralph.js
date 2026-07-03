@@ -1076,196 +1076,8 @@ function validateReviewConfig(config) {
   }
 }
 
-// src/runtime-config.ts
-function normalizeRuntimeConfigValue(path, value, expected) {
-  if (value === undefined)
-    return;
-  if (expected === "string") {
-    if (typeof value !== "string") {
-      console.error(`Error: Ralph TOML config key '${path}' must be a string.`);
-      process.exit(1);
-    }
-    return value;
-  }
-  if (expected === "number") {
-    if (typeof value !== "number" || Number.isNaN(value)) {
-      console.error(`Error: Ralph TOML config key '${path}' must be a number.`);
-      process.exit(1);
-    }
-    return value;
-  }
-  if (expected === "boolean") {
-    if (typeof value !== "boolean") {
-      console.error(`Error: Ralph TOML config key '${path}' must be a boolean.`);
-      process.exit(1);
-    }
-    return value;
-  }
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    console.error(`Error: Ralph TOML config key '${path}' must be an array of strings.`);
-    process.exit(1);
-  }
-  return value;
-}
-function parseReviewConfig(parsed) {
-  const reviewSection = parsed.review;
-  if (!reviewSection || typeof reviewSection !== "object") {
-    return null;
-  }
-  const review = reviewSection;
-  const enabled = normalizeRuntimeConfigValue("review.enabled", review.enabled, "boolean");
-  if (!enabled) {
-    return null;
-  }
-  const quorum = normalizeRuntimeConfigValue("review.quorum", review.quorum, "string");
-  if (!quorum) {
-    console.error('Error: review.quorum is required when review is enabled. Expected "X/Y" format (e.g., "3/3").');
-    process.exit(1);
-  }
-  const voterTimeout = normalizeRuntimeConfigValue("review.voter_timeout", review.voter_timeout, "string") || "10m";
-  const maxRejectCycles = normalizeRuntimeConfigValue("review.max_reject_cycles", review.max_reject_cycles, "number") ?? 5;
-  const batchSize = normalizeRuntimeConfigValue("review.batch_size", review.batch_size, "number") ?? 3;
-  const reviewPromptFile = normalizeRuntimeConfigValue("review.review_prompt_file", review.review_prompt_file, "string") || "";
-  const voters = [];
-  if (Array.isArray(review.voter)) {
-    for (let i = 0;i < review.voter.length; i++) {
-      const v = review.voter[i];
-      if (typeof v !== "object" || v === null) {
-        console.error(`Error: review.voter[${i}] must be a table.`);
-        process.exit(1);
-      }
-      const voterObj = v;
-      const agent = normalizeRuntimeConfigValue(`review.voter[${i}].agent`, voterObj.agent, "string");
-      const model = normalizeRuntimeConfigValue(`review.voter[${i}].model`, voterObj.model, "string");
-      const promptFlag = normalizeRuntimeConfigValue(`review.voter[${i}].prompt_flag`, voterObj.prompt_flag, "string");
-      if (!agent || !model) {
-        console.error(`Error: review.voter[${i}] must have both 'agent' and 'model' fields.`);
-        process.exit(1);
-      }
-      voters.push({ agent, model, promptFlag });
-    }
-  }
-  if (voters.length === 0) {
-    console.error("Error: At least one [[review.voter]] is required when review is enabled.");
-    process.exit(1);
-  }
-  return {
-    enabled: true,
-    quorum,
-    voterTimeout,
-    maxRejectCycles,
-    batchSize,
-    reviewPromptFile,
-    voters
-  };
-}
-
-// src/goal-parser.ts
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "fs";
-function parseGoalMd(filePath, slug) {
-  if (!filePath) {
-    throw new Error(`goal.md path is empty`);
-  }
-  let content;
-  try {
-    content = readFileSync3(filePath, "utf-8");
-  } catch {
-    throw new Error(`goal.md not found: ${filePath}`);
-  }
-  const title = extractTitle(content);
-  if (!title) {
-    throw new Error(`goal.md has no title (expected "# Goal: <title>"): ${filePath}`);
-  }
-  return {
-    slug,
-    title,
-    objective: extractSection(content, "Objective"),
-    facts: extractFacts(content),
-    planSteps: extractPlanSteps(content),
-    doneCondition: extractSection(content, "Done Condition"),
-    filePath
-  };
-}
-function extractTitle(content) {
-  const match = content.match(/^#\s+Goal:\s+(.+)$/m);
-  return match ? match[1].trim() : "";
-}
-function stripFencedCodeBlocks(content) {
-  return content.replace(/```[\s\S]*?```/g, "");
-}
-function extractSection(content, sectionName) {
-  const stripped = stripFencedCodeBlocks(content);
-  const regex = new RegExp(`^##\\s+${escapeRegex2(sectionName)}\\s*\\n([\\s\\S]*?)(?=^##\\s|$(?!\\n))`, "m");
-  const match = stripped.match(regex);
-  if (!match)
-    return "";
-  return match[1].trim();
-}
-function extractFacts(content) {
-  const section = extractSection(content, "Facts");
-  if (!section)
-    return [];
-  const facts = [];
-  const lines = section.split(`
-`);
-  let factId = 0;
-  for (const line of lines) {
-    const match = line.match(/^\s*- \[([x ])\]\s*(?:Fact\s+\d+:\s*)?(.+)$/i);
-    if (match) {
-      factId++;
-      facts.push({
-        id: factId,
-        text: match[2].trim(),
-        verified: match[1].toLowerCase() === "x"
-      });
-    }
-  }
-  return facts;
-}
-function extractPlanSteps(content) {
-  const section = extractSection(content, "Plan");
-  if (!section)
-    return [];
-  const steps = [];
-  const lines = section.split(`
-`);
-  let currentStep = null;
-  for (const line of lines) {
-    const stepMatch = line.match(/^\s*(\d+)\.\s+(.+)$/);
-    if (stepMatch) {
-      if (currentStep)
-        steps.push(currentStep);
-      let text = stepMatch[2];
-      let touches;
-      const multiTouchMatch = text.match(/(?:\u2014\s*)?touches\s+((?:`[^`]+`(?:,\s*)?)+)/);
-      if (multiTouchMatch) {
-        touches = [...multiTouchMatch[1].matchAll(/`([^`]+)`/g)].map((m) => m[1]);
-        text = text.replace(/\s*(?:\u2014\s*)?touches\s+(?:`[^`]+`(?:,\s*)?)+/, "");
-      }
-      currentStep = {
-        id: parseInt(stepMatch[1]),
-        text: text.trim(),
-        ...touches ? { touches } : {}
-      };
-      continue;
-    }
-    if (currentStep) {
-      const verifMatch = line.match(/^\s+-\s+Verification:\s*`([^`]+)`/i);
-      if (verifMatch) {
-        currentStep.verification = verifMatch[1];
-      }
-    }
-  }
-  if (currentStep)
-    steps.push(currentStep);
-  return steps;
-}
-function escapeRegex2(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 // src/lifecycle-hooks.ts
-import { existsSync as existsSync2, readdirSync, statSync, readFileSync as readFileSync4, writeFileSync as writeFileSync3, unlinkSync } from "fs";
+import { existsSync as existsSync2, readdirSync, statSync, readFileSync as readFileSync3, writeFileSync as writeFileSync2, unlinkSync } from "fs";
 import { join } from "path";
 import { spawnSync } from "child_process";
 var LIFECYCLE_EVENTS = [
@@ -1281,6 +1093,7 @@ var LIFECYCLE_EVENTS = [
 ];
 var DEFAULT_GLOBAL_CONFIG_DIR = join(process.env.HOME || process.env.USERPROFILE || "~", ".config", "open-ralph-wiggum");
 var LOCAL_HOOKS_DIR = ".ralph/hooks";
+var DEFAULT_HOOK_TIMEOUT_MS = 30000;
 var HOOK_FILENAME_RE = /^(\d+)-(.+)\.sh$/;
 var PIPELINE_CONTEXT_START = "---RALPH_PIPELINE_CONTEXT---";
 var PIPELINE_CONTEXT_END = "---END_PIPELINE_CONTEXT---";
@@ -1291,7 +1104,7 @@ function loadPipelineContext(stateDir) {
     return {};
   }
   try {
-    const content = readFileSync4(contextPath, "utf-8");
+    const content = readFileSync3(contextPath, "utf-8");
     return JSON.parse(content);
   } catch (err) {
     console.warn(`[hooks] Failed to load pipeline context: ${err}`);
@@ -1301,7 +1114,7 @@ function loadPipelineContext(stateDir) {
 function savePipelineContext(stateDir, context) {
   const contextPath = join(stateDir, PIPELINE_CONTEXT_FILE);
   try {
-    writeFileSync3(contextPath, JSON.stringify(context, null, 2));
+    writeFileSync2(contextPath, JSON.stringify(context, null, 2));
   } catch (err) {
     console.warn(`[hooks] Failed to save pipeline context: ${err}`);
   }
@@ -1431,12 +1244,13 @@ function executeHooks(options) {
   }
   if (hooks.length === 0)
     return pipelineContext;
+  const hookTimeoutMs = options.hookTimeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
   for (const hook of hooks) {
-    pipelineContext = runHook(hook, env, cwd, pipelineContext, verbose);
+    pipelineContext = runHook(hook, env, cwd, pipelineContext, hookTimeoutMs, verbose);
   }
   return pipelineContext;
 }
-function runHook(hook, env, cwd, pipelineContext, verbose) {
+function runHook(hook, env, cwd, pipelineContext, hookTimeoutMs, verbose) {
   const prefix = `[hook:${hook.priority}-${hook.name}]`;
   const hookEnv = {
     ...process.env,
@@ -1464,12 +1278,14 @@ function runHook(hook, env, cwd, pipelineContext, verbose) {
     console.log(`[pipeline] Before hook ${hook.name}: ${JSON.stringify(pipelineContext)}`);
   }
   try {
+    const hookStart = performance.now();
     const result = spawnSync("bash", [hook.filePath], {
       cwd,
       env: hookEnv,
       encoding: "utf-8",
-      timeout: 30000
+      timeout: hookTimeoutMs
     });
+    const elapsed = performance.now() - hookStart;
     let updatedContext = pipelineContext;
     if (result.stdout) {
       const parsedContext = parsePipelineContextFromOutput(result.stdout);
@@ -1503,7 +1319,14 @@ function runHook(hook, env, cwd, pipelineContext, verbose) {
       console.warn(`${prefix} exited with code ${result.status}`);
     }
     if (result.signal) {
-      console.warn(`${prefix} killed by signal ${result.signal}`);
+      const errCode = result.error?.code;
+      const elapsedHeuristicOK = hookTimeoutMs > 50 && elapsed >= hookTimeoutMs - 50;
+      const timedOut = result.signal === "SIGTERM" && (errCode === "ETIMEDOUT" || elapsedHeuristicOK);
+      if (timedOut) {
+        console.warn(`${prefix} timed out after ${hookTimeoutMs}ms`);
+      } else {
+        console.warn(`${prefix} killed by signal ${result.signal}`);
+      }
     }
     if (verbose) {
       console.log(`[pipeline] After hook ${hook.name}: ${JSON.stringify(updatedContext)}`);
@@ -1564,6 +1387,213 @@ function clearPipelineContext(stateDir) {
       console.warn(`[hooks] Failed to clear pipeline context: ${err}`);
     }
   }
+}
+
+// src/runtime-config.ts
+function resolveHookTimeoutMs(cliFlag) {
+  if (cliFlag !== undefined && cliFlag !== "") {
+    const n = Number(cliFlag);
+    if (!Number.isInteger(n) || n <= 0) {
+      throw new Error(`--hook-timeout requires a positive integer (ms); got '${cliFlag}'`);
+    }
+    return n;
+  }
+  const envRaw = process.env.RALPH_HOOK_TIMEOUT_MS;
+  if (envRaw !== undefined && envRaw !== "") {
+    const n = Number(envRaw);
+    if (!Number.isInteger(n) || n <= 0) {
+      console.warn(`[hooks] RALPH_HOOK_TIMEOUT_MS='${envRaw}' is not a positive integer; falling back to ${DEFAULT_HOOK_TIMEOUT_MS}ms`);
+      return DEFAULT_HOOK_TIMEOUT_MS;
+    }
+    return n;
+  }
+  return DEFAULT_HOOK_TIMEOUT_MS;
+}
+function normalizeRuntimeConfigValue(path, value, expected) {
+  if (value === undefined)
+    return;
+  if (expected === "string") {
+    if (typeof value !== "string") {
+      console.error(`Error: Ralph TOML config key '${path}' must be a string.`);
+      process.exit(1);
+    }
+    return value;
+  }
+  if (expected === "number") {
+    if (typeof value !== "number" || Number.isNaN(value)) {
+      console.error(`Error: Ralph TOML config key '${path}' must be a number.`);
+      process.exit(1);
+    }
+    return value;
+  }
+  if (expected === "boolean") {
+    if (typeof value !== "boolean") {
+      console.error(`Error: Ralph TOML config key '${path}' must be a boolean.`);
+      process.exit(1);
+    }
+    return value;
+  }
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    console.error(`Error: Ralph TOML config key '${path}' must be an array of strings.`);
+    process.exit(1);
+  }
+  return value;
+}
+function parseReviewConfig(parsed) {
+  const reviewSection = parsed.review;
+  if (!reviewSection || typeof reviewSection !== "object") {
+    return null;
+  }
+  const review = reviewSection;
+  const enabled = normalizeRuntimeConfigValue("review.enabled", review.enabled, "boolean");
+  if (!enabled) {
+    return null;
+  }
+  const quorum = normalizeRuntimeConfigValue("review.quorum", review.quorum, "string");
+  if (!quorum) {
+    console.error('Error: review.quorum is required when review is enabled. Expected "X/Y" format (e.g., "3/3").');
+    process.exit(1);
+  }
+  const voterTimeout = normalizeRuntimeConfigValue("review.voter_timeout", review.voter_timeout, "string") || "10m";
+  const maxRejectCycles = normalizeRuntimeConfigValue("review.max_reject_cycles", review.max_reject_cycles, "number") ?? 5;
+  const batchSize = normalizeRuntimeConfigValue("review.batch_size", review.batch_size, "number") ?? 3;
+  const reviewPromptFile = normalizeRuntimeConfigValue("review.review_prompt_file", review.review_prompt_file, "string") || "";
+  const voters = [];
+  if (Array.isArray(review.voter)) {
+    for (let i = 0;i < review.voter.length; i++) {
+      const v = review.voter[i];
+      if (typeof v !== "object" || v === null) {
+        console.error(`Error: review.voter[${i}] must be a table.`);
+        process.exit(1);
+      }
+      const voterObj = v;
+      const agent = normalizeRuntimeConfigValue(`review.voter[${i}].agent`, voterObj.agent, "string");
+      const model = normalizeRuntimeConfigValue(`review.voter[${i}].model`, voterObj.model, "string");
+      const promptFlag = normalizeRuntimeConfigValue(`review.voter[${i}].prompt_flag`, voterObj.prompt_flag, "string");
+      if (!agent || !model) {
+        console.error(`Error: review.voter[${i}] must have both 'agent' and 'model' fields.`);
+        process.exit(1);
+      }
+      voters.push({ agent, model, promptFlag });
+    }
+  }
+  if (voters.length === 0) {
+    console.error("Error: At least one [[review.voter]] is required when review is enabled.");
+    process.exit(1);
+  }
+  return {
+    enabled: true,
+    quorum,
+    voterTimeout,
+    maxRejectCycles,
+    batchSize,
+    reviewPromptFile,
+    voters
+  };
+}
+
+// src/goal-parser.ts
+import { readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "fs";
+function parseGoalMd(filePath, slug) {
+  if (!filePath) {
+    throw new Error(`goal.md path is empty`);
+  }
+  let content;
+  try {
+    content = readFileSync4(filePath, "utf-8");
+  } catch {
+    throw new Error(`goal.md not found: ${filePath}`);
+  }
+  const title = extractTitle(content);
+  if (!title) {
+    throw new Error(`goal.md has no title (expected "# Goal: <title>"): ${filePath}`);
+  }
+  return {
+    slug,
+    title,
+    objective: extractSection(content, "Objective"),
+    facts: extractFacts(content),
+    planSteps: extractPlanSteps(content),
+    doneCondition: extractSection(content, "Done Condition"),
+    filePath
+  };
+}
+function extractTitle(content) {
+  const match = content.match(/^#\s+Goal:\s+(.+)$/m);
+  return match ? match[1].trim() : "";
+}
+function stripFencedCodeBlocks(content) {
+  return content.replace(/```[\s\S]*?```/g, "");
+}
+function extractSection(content, sectionName) {
+  const stripped = stripFencedCodeBlocks(content);
+  const regex = new RegExp(`^##\\s+${escapeRegex2(sectionName)}\\s*\\n([\\s\\S]*?)(?=^##\\s|$(?!\\n))`, "m");
+  const match = stripped.match(regex);
+  if (!match)
+    return "";
+  return match[1].trim();
+}
+function extractFacts(content) {
+  const section = extractSection(content, "Facts");
+  if (!section)
+    return [];
+  const facts = [];
+  const lines = section.split(`
+`);
+  let factId = 0;
+  for (const line of lines) {
+    const match = line.match(/^\s*- \[([x ])\]\s*(?:Fact\s+\d+:\s*)?(.+)$/i);
+    if (match) {
+      factId++;
+      facts.push({
+        id: factId,
+        text: match[2].trim(),
+        verified: match[1].toLowerCase() === "x"
+      });
+    }
+  }
+  return facts;
+}
+function extractPlanSteps(content) {
+  const section = extractSection(content, "Plan");
+  if (!section)
+    return [];
+  const steps = [];
+  const lines = section.split(`
+`);
+  let currentStep = null;
+  for (const line of lines) {
+    const stepMatch = line.match(/^\s*(\d+)\.\s+(.+)$/);
+    if (stepMatch) {
+      if (currentStep)
+        steps.push(currentStep);
+      let text = stepMatch[2];
+      let touches;
+      const multiTouchMatch = text.match(/(?:\u2014\s*)?touches\s+((?:`[^`]+`(?:,\s*)?)+)/);
+      if (multiTouchMatch) {
+        touches = [...multiTouchMatch[1].matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+        text = text.replace(/\s*(?:\u2014\s*)?touches\s+(?:`[^`]+`(?:,\s*)?)+/, "");
+      }
+      currentStep = {
+        id: parseInt(stepMatch[1]),
+        text: text.trim(),
+        ...touches ? { touches } : {}
+      };
+      continue;
+    }
+    if (currentStep) {
+      const verifMatch = line.match(/^\s+-\s+Verification:\s*`([^`]+)`/i);
+      if (verifMatch) {
+        currentStep.verification = verifMatch[1];
+      }
+    }
+  }
+  if (currentStep)
+    steps.push(currentStep);
+  return steps;
+}
+function escapeRegex2(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // src/goal-state.ts
@@ -3583,6 +3613,7 @@ Options:
   --no-plugins        Disable non-auth OpenCode plugins for this run (opencode only)
   --no-hooks          Disable all lifecycle hooks for this run
   --verbose-hooks     Log pipeline context flow before/after each hook execution
+  --hook-timeout MS   Per-hook timeout in ms (default: 30000; env: RALPH_HOOK_TIMEOUT_MS)
    --stall-retries     Sleep and restart after all fallbacks are exhausted
    --stall-retry-minutes N  Minutes to sleep before restarting exhausted fallbacks (default: 15)
    --no-commit         Don't auto-commit after each iteration
@@ -4340,6 +4371,7 @@ ${newEntry}`);
   let disablePlugins = false;
   let disableHooks = false;
   let verboseHooks = false;
+  let hookTimeoutMsFlag = undefined;
   let allowAllPermissions = true;
   let promptFile = "";
   let promptTemplatePath = "";
@@ -4628,6 +4660,13 @@ ${newEntry}`);
       disableHooks = true;
     } else if (arg === "--verbose-hooks") {
       verboseHooks = true;
+    } else if (arg === "--hook-timeout") {
+      const val = args[++i];
+      if (val === undefined) {
+        console.error("Error: --hook-timeout requires a number");
+        process.exit(1);
+      }
+      hookTimeoutMsFlag = val;
     } else if (arg === "--allow-all") {
       allowAllPermissions = true;
     } else if (arg === "--no-allow-all") {
@@ -4748,6 +4787,13 @@ ${newEntry}`);
   }
   if (maxIterations > 0 && minIterations > maxIterations) {
     console.error(`Error: --min-iterations (${minIterations}) cannot be greater than --max-iterations (${maxIterations})`);
+    process.exit(1);
+  }
+  let hookTimeoutMs;
+  try {
+    hookTimeoutMs = resolveHookTimeoutMs(hookTimeoutMsFlag);
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
     process.exit(1);
   }
   if (stallRetryMinutes < 0) {
@@ -5416,10 +5462,10 @@ Add your tasks below using: \`ralph --add-task "description"\`
     console.log("Starting loop... (Ctrl+C to stop)");
     console.log("\u2550".repeat(68));
     if (resuming) {
-      pipelineContext = executeHooks({ event: "loop-resume", env: buildHookEnv("loop-resume"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+      pipelineContext = executeHooks({ event: "loop-resume", env: buildHookEnv("loop-resume"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
       savePipelineContext(stateDir, pipelineContext);
     } else {
-      pipelineContext = executeHooks({ event: "loop-start", env: buildHookEnv("loop-start"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+      pipelineContext = executeHooks({ event: "loop-start", env: buildHookEnv("loop-start"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
       savePipelineContext(stateDir, pipelineContext);
     }
     let currentProc = null;
@@ -5468,8 +5514,8 @@ Gracefully stopping Ralph loop...`);
         clearPendingQuestions();
       }
       console.log("Loop cancelled.");
-      executeHooks({ event: "loop-cancel", env: buildHookEnv("loop-cancel"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
-      executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "cancel" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+      executeHooks({ event: "loop-cancel", env: buildHookEnv("loop-cancel"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
+      executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "cancel" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
       clearPipelineContext(stateDir);
       setImmediate(() => process.exit(0));
     });
@@ -5523,7 +5569,7 @@ Received SIGTERM, stopping Ralph loop...`);
         console.log(`\u2551  Max iterations (${maxIterations}) reached. Loop stopped.`);
         console.log(`\u2551  Total time: ${formatDurationLong(history.totalDurationMs)}`);
         console.log(`\u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D`);
-        executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "max-iterations" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+        executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "max-iterations" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
         clearPipelineContext(stateDir);
         clearState();
         clearPendingQuestions();
@@ -5534,7 +5580,7 @@ Received SIGTERM, stopping Ralph loop...`);
       console.log(`
 \uD83D\uDD04 Iteration ${state.iteration}${iterInfo}${minInfo}`);
       console.log("\u2500".repeat(68));
-      pipelineContext = executeHooks({ event: "iteration-start", env: buildHookEnv("iteration-start"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+      pipelineContext = executeHooks({ event: "iteration-start", env: buildHookEnv("iteration-start"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
       savePipelineContext(stateDir, pipelineContext);
       const contextAtStart = loadContext();
       const snapshotBefore = await captureFileSnapshot();
@@ -5698,8 +5744,8 @@ Received SIGTERM, stopping Ralph loop...`);
             } else {
               console.log(`
 \uD83D\uDED1 Stopping loop due to stalling`);
-              executeHooks({ event: "loop-stall", env: buildHookEnv("loop-stall"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
-              executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "stall" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+              executeHooks({ event: "loop-stall", env: buildHookEnv("loop-stall"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
+              executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "stall" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
               clearPipelineContext(stateDir);
               state.active = false;
               try {
@@ -5779,8 +5825,8 @@ Received SIGTERM, stopping Ralph loop...`);
             } else {
               console.log(`
 \uD83D\uDED1 Stopping loop due to stalling`);
-              executeHooks({ event: "loop-stall", env: buildHookEnv("loop-stall"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
-              executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "stall" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+              executeHooks({ event: "loop-stall", env: buildHookEnv("loop-stall"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
+              executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "stall" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
               clearPipelineContext(stateDir);
               state.active = false;
               try {
@@ -5860,6 +5906,7 @@ ${stderr}`;
           cwd: process.cwd(),
           disabled: disableHooks,
           verbose: verboseHooks,
+          hookTimeoutMs,
           pipelineContext
         });
         savePipelineContext(stateDir, pipelineContext);
@@ -5940,8 +5987,8 @@ ${stderr}`;
           console.log(`\u2551  Loop aborted after ${state.iteration} iteration(s)`);
           console.log(`\u2551  Total time: ${formatDurationLong(history.totalDurationMs)}`);
           console.log(`\u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D`);
-          executeHooks({ event: "loop-abort", env: buildHookEnv("loop-abort", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs) }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
-          executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "abort" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+          executeHooks({ event: "loop-abort", env: buildHookEnv("loop-abort", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs) }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
+          executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "abort" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
           clearPipelineContext(stateDir);
           clearState();
           clearHistory();
@@ -6041,7 +6088,7 @@ ${answerContext}`);
 \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557`);
                 console.log(`\u2551  \u2705 Review approved! Loop completing.`);
                 console.log(`\u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D`);
-                executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+                executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
                 clearPipelineContext(stateDir);
                 const defaultStateDir = join3(process.cwd(), ".ralph");
                 if (stateDirInput === defaultStateDir) {
@@ -6069,7 +6116,7 @@ ${answerContext}`);
               console.log(`\u2551  Task completed in ${state.iteration} iteration(s)`);
               console.log(`\u2551  Total time: ${formatDurationLong(history.totalDurationMs)}`);
               console.log(`\u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D`);
-              executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+              executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
               clearPipelineContext(stateDir);
               const defaultStateDir = join3(process.cwd(), ".ralph");
               if (stateDirInput === defaultStateDir) {
@@ -6088,7 +6135,7 @@ ${answerContext}`);
 \u23F3 Goal facts all verified, but minimum iterations (${minIterations}) not yet reached.`);
             console.log(`   Continuing to iteration ${state.iteration + 1}...`);
           } else {
-            executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+            executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
             clearPipelineContext(stateDir);
             const defaultStateDir = join3(process.cwd(), ".ralph");
             if (stateDirInput === defaultStateDir) {
@@ -6162,7 +6209,7 @@ ${answerContext}`);
         }
         console.error(`
 \u274C Error in iteration ${state.iteration}:`, error);
-        pipelineContext = executeHooks({ event: "loop-error", env: buildHookEnv("loop-error", { RALPH_ERROR_MESSAGE: String(error).substring(0, 500) }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+        pipelineContext = executeHooks({ event: "loop-error", env: buildHookEnv("loop-error", { RALPH_ERROR_MESSAGE: String(error).substring(0, 500) }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, hookTimeoutMs, pipelineContext });
         savePipelineContext(stateDir, pipelineContext);
         console.log("Continuing to next iteration...");
         const iterationDuration = Date.now() - iterationStart;
