@@ -545,8 +545,23 @@ Hooks receive context via environment variables:
 | `RALPH_COMPLETION_DETECTED` | Whether completion was detected (iteration-end only) |
 | `RALPH_DURATION_MS` | Iteration duration in ms (iteration-end only) |
 | `RALPH_TOTAL_DURATION_MS` | Total loop duration in ms (loop-end only) |
-| `RALPH_END_REASON` | Why loop ended: `completion`, `max-iterations`, `abort`, `stall`, `cancel`, `error` (loop-end only) |
+| `RALPH_END_REASON` | Why loop ended: `completion`, `max-iterations`, `abort`, `stall`, `cancel` (loop-end only). Note: `error` is intentionally NOT a loop-end reason — `loop-error` is non-terminal (the loop continues) and is itself the error signal. |
 | `RALPH_ERROR_MESSAGE` | Error message (loop-error only) |
+
+### Build Prerequisites for Tests
+
+A few integration tests invoke the compiled `bin/ralph` binary rather than `bun run ralph.ts`. Before running the suite you MUST build it once so those tests resolve:
+
+```bash
+bun run build   # produces bin/ralph
+```
+
+Test files that depend on `bin/ralph`:
+
+- `tests/stall-retry.test.ts` — exercises the compiled binary's stall-retry loop
+- `tests/src-goal-handlers.test.ts` — goal-handling CLI paths via `bin/ralph`
+
+All other tests (including `tests/hooks-pipeline-integration.test.ts`) run `bun run ralph.ts` directly and do not require a build.
 
 #### Example Hook
 
@@ -602,8 +617,9 @@ Hooks can pass data between each other and across iterations using pipeline cont
    echo "---END_PIPELINE_CONTEXT---"
    ```
 3. Context flows through hooks in priority order (each hook sees previous hooks' updates)
-4. Final context is saved to `.ralph/pipeline-context.json` after each iteration
-5. Context is loaded at loop start and persists across iterations
+4. Final context is saved to `.ralph/pipeline-context.json` after every hook reassignment (loop-start, loop-resume, iteration-start, iteration-end, loop-error) so mutations survive even if the process crashes before the next save point
+5. Context is loaded at loop start ONLY when resuming (`--reuse-state`); a fresh run clears any stale crashed-run context file so it cannot leak in
+6. The spawned agent **also** receives `RALPH_PIPELINE_CONTEXT` in its environment, so iterations can read/extend hook-provided context
 
 **Example: Accumulating metrics**
 
@@ -631,9 +647,11 @@ ralph pipeline clear
 ```
 
 **Notes:**
-- Context blocks are filtered from regular hook output (not printed to console)
+- Context blocks are filtered from regular hook output on BOTH stdout and stderr (not printed to console); a block emitted to stderr is still parsed and merged
+- Multiple context blocks in a single hook's output are merged sequentially (last wins on conflicts)
 - Malformed JSON in context blocks is ignored with a warning
 - Context uses shallow merge (last-write-wins for duplicate keys)
+- When the loop terminates normally (completion, max-iterations, abort, cancel, or stall), the persisted `pipeline-context.json` is cleared so stale context does not leak into the next unrelated `ralph` run. Terminal exit paths (SIGINT, SIGTERM, uncaught exceptions, fatal errors) also clear it.
 - Use `--verbose-hooks` to see context flow through hooks
 
 ## Troubleshooting

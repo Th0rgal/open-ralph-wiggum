@@ -66,7 +66,7 @@ The codebase already uses `Bun.spawn` for agent execution and context injection 
 - `RALPH_COMPLETION_DETECTED` — boolean (iteration-end only)
 - `RALPH_DURATION_MS` — iteration duration ms (iteration-end only)
 - `RALPH_TOTAL_DURATION_MS` — total loop duration ms (loop-end only)
-- `RALPH_END_REASON` — why loop ended (loop-end only: `completion`, `max-iterations`, `abort`, `stall`, `cancel`, `error`)
+- `RALPH_END_REASON` — why loop ended (loop-end only: `completion`, `max-iterations`, `abort`, `stall`, `cancel`). `error` is intentionally NOT a loop-end reason — `loop-error` is non-terminal (the loop continues).
 
 **Alternatives considered**:
 - stdin JSON — more structured but harder for bash scripts to parse

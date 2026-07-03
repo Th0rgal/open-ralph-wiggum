@@ -6,7 +6,7 @@
  * Supports pipeline context that flows through hooks like middleware.
  */
 
-import { existsSync, readdirSync, statSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { spawnSync } from "child_process";
 
@@ -69,8 +69,11 @@ export interface HookEnv {
    RALPH_DURATION_MS?: string;
    /** Total loop duration in ms (loop-end only) */
    RALPH_TOTAL_DURATION_MS?: string;
-   /** Why loop ended (loop-end only) */
-   RALPH_END_REASON?: "completion" | "max-iterations" | "abort" | "stall" | "cancel" | "error";
+   /** Why loop ended (loop-end only). NOTE: 'error' is intentionally NOT a
+    * loop-end reason — `loop-error` is non-terminal (the loop continues), so
+    * firing `loop-end` on every error would be semantically wrong. The
+    * `loop-error` event is the error signal. */
+   RALPH_END_REASON?: "completion" | "max-iterations" | "abort" | "stall" | "cancel";
    /** Error message (loop-error only) */
    RALPH_ERROR_MESSAGE?: string;
    /** Pipeline context as JSON string */
@@ -161,25 +164,44 @@ export function savePipelineContext(stateDir: string, context: PipelineContext):
 
 /**
  * Parse pipeline context from hook stdout output.
- * Looks for delimited block and extracts JSON.
- * Returns null if no context block found or if JSON is invalid.
+ * Parses ALL delimited blocks and merges them sequentially (later blocks
+ * win on key conflicts via shallow merge). A single block is returned as-is.
+ * Returns null if no valid context block is found.
  */
 export function parsePipelineContextFromOutput(output: string): PipelineContext | null {
-   const startIdx = output.indexOf(PIPELINE_CONTEXT_START);
-   if (startIdx === -1) return null;
+   const blocks = findAllContextBlocks(output);
+   if (blocks.length === 0) return null;
 
-   const endIdx = output.indexOf(PIPELINE_CONTEXT_END, startIdx);
-   if (endIdx === -1) return null;
-
-   const contextStr = output.substring(startIdx + PIPELINE_CONTEXT_START.length, endIdx).trim();
-   if (!contextStr) return null;
-
-   try {
-      return JSON.parse(contextStr);
-   } catch (err) {
-      console.warn(`[hooks] Failed to parse pipeline context from hook output: ${err}`);
-      return null;
+   let merged: PipelineContext | null = null;
+   for (const block of blocks) {
+      const trimmed = block.trim();
+      if (!trimmed) continue;
+      try {
+         const parsed = JSON.parse(trimmed);
+         merged = merged ? mergePipelineContext(merged, parsed) : parsed;
+      } catch (err) {
+         console.warn(`[hooks] Failed to parse pipeline context from hook output: ${err}`);
+      }
    }
+   return merged;
+}
+
+/**
+ * Extract the JSON-string content of every delimited context block in `output`.
+ * A block with a start marker but no matching end marker is skipped.
+ */
+function findAllContextBlocks(output: string): string[] {
+   const blocks: string[] = [];
+   let cursor = 0;
+   while (true) {
+      const startIdx = output.indexOf(PIPELINE_CONTEXT_START, cursor);
+      if (startIdx === -1) break;
+      const endIdx = output.indexOf(PIPELINE_CONTEXT_END, startIdx + PIPELINE_CONTEXT_START.length);
+      if (endIdx === -1) break;
+      blocks.push(output.substring(startIdx + PIPELINE_CONTEXT_START.length, endIdx));
+      cursor = endIdx + PIPELINE_CONTEXT_END.length;
+   }
+   return blocks;
 }
 
 /**
@@ -203,18 +225,29 @@ export function formatPipelineContextForEnv(context: PipelineContext): string {
 
 /**
  * Filter pipeline context blocks from hook output.
- * Returns output with context blocks removed.
+ * Removes ALL delimited context blocks (start+end marker pairs) from printed
+ * output. An UNTERMINATED start marker (no matching end marker before end of
+ * stream) is left UNTOUCHED in the output — it is ambiguous and may be
+ * legitimate text, so the filter refuses to consume unbounded trailing
+ * content. Only complete start+end-delimited blocks are stripped; an
+ * unterminated block carries no context (parse skips it too).
  */
 export function filterPipelineContextFromOutput(output: string): string {
-   const startIdx = output.indexOf(PIPELINE_CONTEXT_START);
-   if (startIdx === -1) return output;
-
-   const endIdx = output.indexOf(PIPELINE_CONTEXT_END, startIdx);
-   if (endIdx === -1) return output;
-
-   const before = output.substring(0, startIdx);
-   const after = output.substring(endIdx + PIPELINE_CONTEXT_END.length);
-   return before + after;
+   let result = output;
+   while (true) {
+      const startIdx = result.indexOf(PIPELINE_CONTEXT_START);
+      if (startIdx === -1) return result;
+      const endIdx = result.indexOf(PIPELINE_CONTEXT_END, startIdx + PIPELINE_CONTEXT_START.length);
+      if (endIdx === -1) {
+         // Unterminated start marker: leave the output UNCHANGED (including
+         // the marker and any trailing content). The marker may be legitimate
+         // text; stripping unbounded trailing content would lose data. Only
+         // complete start+end pairs are parsed as context, so an unterminated
+         // block carries no context and is preserved verbatim.
+         return result;
+      }
+      result = result.substring(0, startIdx) + result.substring(endIdx + PIPELINE_CONTEXT_END.length);
+   }
 }
 
 // ── Discovery ────────────────────────────────────────────────────────────────
@@ -389,24 +422,38 @@ function runHook(
          timeout: 30000, // 30s max per hook
       });
 
-      // Parse pipeline context from stdout
+      // D5: parse pipeline context from BOTH stdout and stderr. Spec requires
+      // "All context blocks SHALL be filtered from printed output" — that
+      // includes stderr. We parse from both streams for merging, then filter
+      // both streams before display.
       let updatedContext = pipelineContext;
       if (result.stdout) {
          const parsedContext = parsePipelineContextFromOutput(result.stdout);
          if (parsedContext !== null) {
             updatedContext = mergePipelineContext(pipelineContext, parsedContext);
          }
+      }
+      if (result.stderr) {
+         const parsedFromErr = parsePipelineContextFromOutput(result.stderr);
+         if (parsedFromErr !== null) {
+            // Merge on top of the (possibly already stdout-merged) context so
+            // stderr blocks contribute too. Last-write-wins semantics.
+            updatedContext = mergePipelineContext(updatedContext, parsedFromErr);
+         }
+      }
 
-         // Filter context blocks from output and print remaining lines
+      // Filter context blocks from stdout and print remaining lines.
+      if (result.stdout) {
          const filteredOutput = filterPipelineContextFromOutput(result.stdout);
          for (const line of filteredOutput.split("\n")) {
             if (line.trim()) console.log(`${prefix} ${line}`);
          }
       }
 
-      // Print stderr with prefix
+      // Filter context blocks from stderr too and print with prefix.
       if (result.stderr) {
-         for (const line of result.stderr.split("\n")) {
+         const filteredStderr = filterPipelineContextFromOutput(result.stderr);
+         for (const line of filteredStderr.split("\n")) {
             if (line.trim()) console.error(`${prefix} ${line}`);
          }
       }
@@ -503,7 +550,6 @@ export function clearPipelineContext(stateDir: string): void {
    const contextPath = join(stateDir, PIPELINE_CONTEXT_FILE);
    if (existsSync(contextPath)) {
       try {
-         const { unlinkSync } = require("fs");
          unlinkSync(contextPath);
       } catch (err) {
          console.warn(`[hooks] Failed to clear pipeline context: ${err}`);

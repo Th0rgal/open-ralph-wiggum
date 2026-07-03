@@ -10,6 +10,9 @@
 #   complete (default)              — prints "work finished\n<promise>COMPLETE\n"
 #   stall                           — infinite sleep (Ralph kills after stallingTimeout)
 #   stall-N                         — sleep N seconds then emit "<promise>STALLDONE\n"
+#   partial-complete                 — emit periodic chunks (~400ms apart, total ~1.6s)
+#                                      spanning the stalling window so keepalive logic is
+#                                      exercised, then emit completion promise and exit 0
 #   <any other value>               — prints "unknown model: <value>" and exits 1
 #
 
@@ -63,6 +66,23 @@ while (($#)); do
       ;;
   esac
 done
+
+# partial-complete mode: emit periodic chunks ACROSS the stalling window so
+# Ralph's stream-activity tracker sees real stdout activity and resets the
+# stall timer. Total runtime ~1.5s spans the 1s stalling timeout window.
+if [[ "$model" == "partial-complete" ]]; then
+  echo "partial chunk 1"
+  sleep 0.4
+  echo "partial chunk 2"
+  sleep 0.4
+  echo "partial chunk 3"
+  sleep 0.4
+  echo "partial chunk 4"
+  sleep 0.4
+  echo "work finished"
+  echo "<promise>$completion_promise</promise>"
+  exit 0
+fi
 
 if [[ "$model" == "stall" ]]; then
   # Ralph kills us after stallingTimeout

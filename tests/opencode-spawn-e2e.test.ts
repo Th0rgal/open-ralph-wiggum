@@ -50,6 +50,7 @@ import { join } from "path";
 const ralphPath = join(process.cwd(), "ralph.ts");
 const bunPath = process.execPath;
 const fakeOpencodePath = join(process.cwd(), "tests/helpers/fake-opencode.sh");
+const fakeOpencodeStrictPath = join(process.cwd(), "tests/helpers/fake-opencode-strict.sh");
 
 let workDir = "";
 let stateDir = "";
@@ -397,7 +398,7 @@ describe("opencode spawn – tool output parsing", () => {
 // Demonstrates that custom opencode-compatible binaries can use argsTemplate: "opencode-raw"
 // to avoid the hardcoded "run" subcommand. The subcommand is injected via extraFlags.
 
-describe.skip("opencode spawn – opencode-raw argsTemplate (custom binary)", () => {
+describe("opencode spawn – opencode-raw argsTemplate (custom binary)", () => {
    let customConfigPath = "";
 
    beforeEach(() => {
@@ -406,7 +407,7 @@ describe.skip("opencode spawn – opencode-raw argsTemplate (custom binary)", ()
    });
    afterEach(cleanup);
 
-   function setupCustomBinary(argsTemplate: string, extraFlags: string[] = []) {
+   function setupCustomBinary(argsTemplate: string, extraFlags: string[] = [], binaryPath: string = fakeOpencodePath) {
       mkdirSync(stateDir, { recursive: true });
       writeFileSync(
          customConfigPath,
@@ -415,7 +416,7 @@ describe.skip("opencode spawn – opencode-raw argsTemplate (custom binary)", ()
             agents: [
                {
                   type: "myopencode",
-                  command: fakeOpencodePath,
+                  command: binaryPath,
                   configName: "MyOpenCode",
                   argsTemplate,
                   envTemplate: "default",
@@ -435,7 +436,7 @@ extra_agent_flags = ${JSON.stringify(extraFlags)}
       // Pattern: buildArgs("do it", "", {}) → ["my-subcommand", "do it"]
       setupCustomBinary("opencode-raw", ["my-subcommand"]);
 
-      const result = await runRalph([], ["--agent", "myopencode"]);
+      const result = await runRalph(["--agent", "myopencode"], []);
 
       // fake-opencode outputs "work done" + COMPLETE when it receives my-subcommand
       expect(result.exitCode).toBe(0);
@@ -447,8 +448,8 @@ extra_agent_flags = ${JSON.stringify(extraFlags)}
       setupCustomBinary("opencode-raw", ["exec"]);
 
       const result = await runRalph(
-         [],
-         ["--agent", "myopencode", "--model", "anthropic/claude-sonnet-4"],
+         ["--agent", "myopencode"],
+         ["--model", "anthropic/claude-sonnet-4"],
       );
 
       expect(result.exitCode).toBe(0);
@@ -459,22 +460,26 @@ extra_agent_flags = ${JSON.stringify(extraFlags)}
    it("extraFlags come before the prompt (positional argument is last)", async () => {
       setupCustomBinary("opencode-raw", ["chat", "--verbose"]);
 
-      const result = await runRalph([], ["--agent", "myopencode"]);
+      const result = await runRalph(["--agent", "myopencode"], []);
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain("COMPLETE");
    });
 
    it("errors when using opencode argsTemplate with custom binary that lacks 'run' subcommand", async () => {
-      // Using argsTemplate "opencode" hardcodes "run" — the fake binary doesn't know "run".
-      setupCustomBinary("opencode", []);
+      // Using argsTemplate "opencode" hardcodes "run". fake-opencode-strict.sh
+      // rejects "run" (all other subcommands accepted) to model a binary that
+      // lacks the run subcommand.
+      setupCustomBinary("opencode", [], fakeOpencodeStrictPath);
 
-      const result = await runRalph([], ["--agent", "myopencode"]);
+      const result = await runRalph(["--agent", "myopencode", "--max-iterations", "1"], []);
 
-      // fake-opencode.sh exits 1 when it receives an unknown subcommand
-      expect(result.exitCode).not.toBe(0);
-      // Ralph reports the failure
-      expect(result.stderr + result.stdout).toContain("error");
+      // fake-opencode-strict.sh exits 1 when it receives "run"; ralph surfaces the
+      // agent's stderr and logs the non-zero exit. Ralph itself exits 0 (it
+      // continues to the next iteration), so we assert on the surfaced error
+      // message rather than ralph's exit code.
+      expect((result.stderr + result.stdout).toLowerCase()).toContain("error");
+      expect((result.stderr + result.stdout).toLowerCase()).toContain("unknown subcommand");
    });
 });
 
@@ -487,10 +492,7 @@ describe("opencode spawn – stalling detection", () => {
    });
    afterEach(cleanup);
 
-   // Skipped: Bun.spawn stdin:inherit + proc.kill() leaves stdout reader open ~5s.
-   // Ralph correctly detects stalling (stalled=true, "stopping loop") but the test
-   // times out waiting for Ralph to exit. Well-covered by stalling-detection.test.ts.
-   it.skip("detects stalling when opencode model=stall (agent hangs)", async () => {
+   it("detects stalling when opencode model=stall (agent hangs)", async () => {
       const result = await runRalph([
          "--agent", "opencode",
          "--model", "stall",
@@ -505,13 +507,14 @@ describe("opencode spawn – stalling detection", () => {
       expect(result.stdout.toLowerCase()).toContain("stopping");
    });
 
-   it.skip("stalls and detects it within the timeout window", async () => {
+   it("stalls and detects it within the timeout window", async () => {
       const result = await runRalph([
          "--agent", "opencode",
-         "--model", "stall-2",
+         "--model", "stall-5",
          "--stalling-timeout", "3s",
          "--stalling-action", "stop",
          "--heartbeat-interval", "500ms",
+         "--pre-start-timeout", "0",
          "--max-iterations", "1",
       ]);
       expect(result.exitCode).toBe(0);

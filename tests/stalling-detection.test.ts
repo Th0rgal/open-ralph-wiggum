@@ -74,7 +74,7 @@ function runWithFakeAgent(args: string[]) {
   });
 }
 
-describe.skip('Stalling Detection - Real Tests', () => {
+describe('Stalling Detection - Real Tests', () => {
   beforeEach(() => {
     setupWorkDir();
   });
@@ -291,7 +291,7 @@ describe.skip('Stalling Detection - Real Tests', () => {
         startedAt: new Date().toISOString(),
         pid: 999999,
         pidStartSignature: 'stale-signature',
-        model: '',
+        model: 'stall',
         agent: 'codex',
         stallingTimeoutMs: 30000,
         blacklistDurationMs: 90000,

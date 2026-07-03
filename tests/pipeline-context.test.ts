@@ -135,6 +135,52 @@ ${PIPELINE_CONTEXT_END}`;
       const result = parsePipelineContextFromOutput(output);
       expect(result).toEqual({ nested: { a: 1, b: [1, 2, 3] }, array: [1, 2] });
    });
+
+   test("parses multiple blocks and merges sequentially", () => {
+      const output = `start
+${PIPELINE_CONTEXT_START}
+{"a": 1}
+${PIPELINE_CONTEXT_END}
+middle
+${PIPELINE_CONTEXT_START}
+{"b": 2}
+${PIPELINE_CONTEXT_END}
+end`;
+      const result = parsePipelineContextFromOutput(output);
+      expect(result).toEqual({ a: 1, b: 2 });
+   });
+
+   test("later block wins on key conflict", () => {
+      const output = `${PIPELINE_CONTEXT_START}
+{"count": 1}
+${PIPELINE_CONTEXT_END}
+${PIPELINE_CONTEXT_START}
+{"count": 9}
+${PIPELINE_CONTEXT_END}`;
+      const result = parsePipelineContextFromOutput(output);
+      expect(result).toEqual({ count: 9 });
+   });
+
+   test("ignores invalid block but keeps valid ones", () => {
+      const output = `${PIPELINE_CONTEXT_START}
+not-json
+${PIPELINE_CONTEXT_END}
+${PIPELINE_CONTEXT_START}
+{"keep": true}
+${PIPELINE_CONTEXT_END}`;
+      const result = parsePipelineContextFromOutput(output);
+      expect(result).toEqual({ keep: true });
+   });
+
+   test("returns null when all blocks are empty/invalid", () => {
+      const output = `${PIPELINE_CONTEXT_START}
+${PIPELINE_CONTEXT_END}
+${PIPELINE_CONTEXT_START}
+still-not-json
+${PIPELINE_CONTEXT_END}`;
+      const result = parsePipelineContextFromOutput(output);
+      expect(result).toBeNull();
+   });
 });
 
 describe("mergePipelineContext", () => {
@@ -227,12 +273,47 @@ ${PIPELINE_CONTEXT_END}`;
       expect(result).toBe("Before\n");
    });
 
-   test("returns original when end marker missing", () => {
+   test("unterminated start marker is left UNTOUCHED (spec contract)", () => {
+      // Spec: an UNTERMINATED start marker (no matching end marker before end
+      // of stream) is left UNTOUCHED in the output — it is ambiguous and may
+      // be legitimate text, so the filter refuses to consume unbounded
+      // trailing content. Preserving data on ambiguity is the safer default.
       const output = `Before
 ${PIPELINE_CONTEXT_START}
 {"key": "value"}`;
       const result = filterPipelineContextFromOutput(output);
+      // Output is returned UNCHANGED — the marker and trailing content remain.
       expect(result).toBe(output);
+      expect(result).toContain(PIPELINE_CONTEXT_START);
+      expect(result).toContain("Before");
+   });
+
+   test("unterminated start marker preserves trailing content including marker text", () => {
+      // Both the marker text AND any trailing content must survive untouched.
+      const trailing = "trailing data that must survive";
+      const output = `Before
+${PIPELINE_CONTEXT_START}
+{"key": "value"}
+${trailing}`;
+      const result = filterPipelineContextFromOutput(output);
+      expect(result).toBe(output);
+      expect(result).toContain(PIPELINE_CONTEXT_START);
+      expect(result).toContain(trailing);
+      expect(result).toContain("Before");
+   });
+
+   test("removes multiple blocks", () => {
+      const output = `Before
+${PIPELINE_CONTEXT_START}
+{"a": 1}
+${PIPELINE_CONTEXT_END}
+Middle
+${PIPELINE_CONTEXT_START}
+{"b": 2}
+${PIPELINE_CONTEXT_END}
+After`;
+      const result = filterPipelineContextFromOutput(output);
+      expect(result).toBe("Before\n\nMiddle\n\nAfter");
    });
 });
 
@@ -391,6 +472,84 @@ echo "${PIPELINE_CONTEXT_END}"`;
          expect(logs.some(l => l.includes("[pipeline] After hook test"))).toBe(true);
       } finally {
          console.log = origLog;
+      }
+   });
+});
+
+// =============================================================================
+// D5/R1/S7: pipeline context emitted on STDERR is parsed AND filtered
+// =============================================================================
+
+describe("executeHooks stderr context handling (D5)", () => {
+   test("parses and merges context emitted on stderr", () => {
+      // Hook writes a context block to stderr (not stdout).
+      const script = `#!/bin/bash
+>&2 echo "${PIPELINE_CONTEXT_START}"
+>&2 echo '{"from_stderr": true}'
+>&2 echo "${PIPELINE_CONTEXT_END}"
+>&2 echo "stderr log line"`;
+      createHook("local", "loop-start", "10-err.sh", script);
+
+      const logs: string[] = [];
+      const errs: string[] = [];
+      const origLog = console.log;
+      const origErr = console.error;
+      console.log = (...args: any[]) => { logs.push(args.join(" ")) };
+      console.error = (...args: any[]) => { errs.push(args.join(" ")) };
+
+      try {
+         const result = executeHooks({
+            event: "loop-start",
+            env: { RALPH_EVENT: "loop-start", RALPH_ITERATION: "1", RALPH_AGENT: "opencode", RALPH_MODEL: "", RALPH_STATE_DIR: STATE_DIR, RALPH_CWD: CWD },
+            cwd: CWD,
+            globalConfigDir: GLOBAL_DIR,
+            pipelineContext: {},
+         });
+
+         // Context from stderr was parsed + merged.
+         expect(result).toEqual({ from_stderr: true });
+         // The non-context stderr line is still printed (prefixed).
+         expect(errs.some(l => l.includes("stderr log line"))).toBe(true);
+         // No raw marker text leaks into the printed stderr.
+         expect(errs.some(l => l.includes(PIPELINE_CONTEXT_START))).toBe(false);
+         expect(errs.some(l => l.includes(PIPELINE_CONTEXT_END))).toBe(false);
+      } finally {
+         console.log = origLog;
+         console.error = origErr;
+      }
+   });
+
+   test("merges stdout and stderr context blocks (last-write-wins)", () => {
+      const script = `#!/bin/bash
+echo "${PIPELINE_CONTEXT_START}"
+echo '{"src": "stdout"}'
+echo "${PIPELINE_CONTEXT_END}"
+>&2 echo "${PIPELINE_CONTEXT_START}"
+>&2 echo '{"src": "stderr", "extra": 1}'
+>&2 echo "${PIPELINE_CONTEXT_END}"`;
+      createHook("local", "loop-start", "10-both.sh", script);
+
+      const logs: string[] = [];
+      const errs: string[] = [];
+      const origLog = console.log;
+      const origErr = console.error;
+      console.log = (...args: any[]) => { logs.push(args.join(" ")) };
+      console.error = (...args: any[]) => { errs.push(args.join(" ")) };
+
+      try {
+         const result = executeHooks({
+            event: "loop-start",
+            env: { RALPH_EVENT: "loop-start", RALPH_ITERATION: "1", RALPH_AGENT: "opencode", RALPH_MODEL: "", RALPH_STATE_DIR: STATE_DIR, RALPH_CWD: CWD },
+            cwd: CWD,
+            globalConfigDir: GLOBAL_DIR,
+            pipelineContext: {},
+         });
+
+         // Both blocks merged; stderr ran after stdout so its keys win on conflict.
+         expect(result).toEqual({ src: "stderr", extra: 1 });
+      } finally {
+         console.log = origLog;
+         console.error = origErr;
       }
    });
 });

@@ -34,7 +34,7 @@ import {
 import { parseReviewConfig } from "./src/runtime-config";
 import type { ReviewConfig, ReviewGateState, ReviewVote } from "./src/types";
 import { parseGoalMd } from "./src/goal-parser";
-import { executeHooks, listAllHooks, formatHooksTable, loadPipelineContext, savePipelineContext, showPipelineContext, clearPipelineContext, type HookEnv, type LifecycleEvent, type PipelineContext, LIFECYCLE_EVENTS } from "./src/lifecycle-hooks";
+import { executeHooks, listAllHooks, formatHooksTable, loadPipelineContext, savePipelineContext, showPipelineContext, clearPipelineContext, filterPipelineContextFromOutput, type HookEnv, type LifecycleEvent, type PipelineContext, LIFECYCLE_EVENTS } from "./src/lifecycle-hooks";
 import { createInitialState as createGoalState, loadGoalState, saveGoalState, syncGoalStateAfterIteration } from "./src/goal-state";
 import { buildInventory, findNextActionableGoal } from "./src/goal-inventory";
 import { buildGoalPromptSection, formatGoalInventory, formatGoalStatus, scaffoldGoalMd, titleToSlug } from "./src/goal-prompt";
@@ -1298,6 +1298,7 @@ Options:
   --no-questions      Disable interactive question handling (agent will loop on questions)
   --no-plugins        Disable non-auth OpenCode plugins for this run (opencode only)
   --no-hooks          Disable all lifecycle hooks for this run
+  --verbose-hooks     Log pipeline context flow before/after each hook execution
    --stall-retries     Sleep and restart after all fallbacks are exhausted
    --stall-retry-minutes N  Minutes to sleep before restarting exhausted fallbacks (default: 15)
    --no-commit         Don't auto-commit after each iteration
@@ -2350,6 +2351,7 @@ Learn more: https://ghuntley.com/ralph/
    let autoCommit = true;
    let disablePlugins = false;
    let disableHooks = false;
+   let verboseHooks = false;
    let allowAllPermissions = true;
    let promptFile = "";
    let promptTemplatePath = ""; // Custom prompt template file
@@ -2691,6 +2693,8 @@ Learn more: https://ghuntley.com/ralph/
          disablePlugins = true;
       } else if (arg === "--no-hooks") {
          disableHooks = true;
+      } else if (arg === "--verbose-hooks") {
+         verboseHooks = true;
       } else if (arg === "--allow-all") {
          allowAllPermissions = true;
       } else if (arg === "--no-allow-all") {
@@ -3898,8 +3902,11 @@ Unable to read ${currentTasksFileLabel()}
       // (main() sets it but runRalphLoop starts running during main's async init)
       if (!agentType) agentType = "opencode";
 
-      // Load pipeline context
-      let pipelineContext: PipelineContext = loadPipelineContext(stateDir);
+      // Pipeline context is initialized after the resume decision below (D3):
+      // a fresh (non-resume) run must NOT inherit a stale context file left
+      // behind by a previously crashed run. We declare the binding here so it
+      // is in scope for buildHookEnv / the rest of the loop.
+      let pipelineContext: PipelineContext = {};
 
       // Check if a loop is already running
       const existingState = loadState();
@@ -3911,6 +3918,15 @@ Unable to read ${currentTasksFileLabel()}
       }
 
        const resuming = ownership.status === "resume";
+
+       // D3: only load persisted pipeline context when resuming. On a fresh
+       // start, clear any stale file left by a crashed previous run so it
+       // cannot leak into this unrelated run.
+       if (resuming) {
+          pipelineContext = loadPipelineContext(stateDir);
+       } else {
+          clearPipelineContext(stateDir);
+       }
 
         // ── Config mismatch check: run BEFORE decideLoopOwnership exit path.
         // This ensures we detect config drift before being blocked by the
@@ -4042,8 +4058,6 @@ Unable to read ${currentTasksFileLabel()}
              console.log(`⚠️  Recovered stale active state from PID ${ownership.ownerPid}`);
           }
           console.log(`🔄 Resuming Ralph loop from ${statePath}`);
-          // Fire loop-resume hook
-          pipelineContext = executeHooks({ event: "loop-resume", env: buildHookEnv("loop-resume"), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
        }
 
       if (tasksMode && completionPromise.trim() === taskPromise.trim()) {
@@ -4285,8 +4299,19 @@ Unable to read ${currentTasksFileLabel()}
       console.log("Starting loop... (Ctrl+C to stop)");
       console.log("═".repeat(68));
 
-      // Fire loop-start hook
-      pipelineContext = executeHooks({ event: "loop-start", env: buildHookEnv("loop-start"), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+      // Fire loop-start / loop-resume hook (mutually exclusive).
+      // loop-resume fires when restoring from existing state; loop-start fires
+      // for a fresh loop. Both fire after `state` is initialized so buildHookEnv
+      // can read state.iteration/agent/model.
+      if (resuming) {
+         pipelineContext = executeHooks({ event: "loop-resume", env: buildHookEnv("loop-resume"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+         // D4 (Option A): persist after every continuing reassign so hook
+         // mutations survive even if the process crashes before the next save.
+         savePipelineContext(stateDir, pipelineContext);
+      } else {
+         pipelineContext = executeHooks({ event: "loop-start", env: buildHookEnv("loop-start"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+         savePipelineContext(stateDir, pipelineContext);
+      }
 
       // Track current subprocess for cleanup on SIGINT
       let currentProc: ReturnType<typeof Bun.spawn> | null = null;
@@ -4303,6 +4328,8 @@ Unable to read ${currentTasksFileLabel()}
       process.on("SIGINT", () => {
          if (stopping) {
             console.log("\nForce stopping...");
+            // S4: clear persisted pipeline context on the forced-exit path too.
+            try { clearPipelineContext(stateDir); } catch { /* best-effort */ }
             process.exit(1);
          }
          stopping = true;
@@ -4345,13 +4372,75 @@ Unable to read ${currentTasksFileLabel()}
             clearPendingQuestions();
          }
          console.log("Loop cancelled.");
-         // Fire loop-cancel hook
-         executeHooks({ event: "loop-cancel", env: buildHookEnv("loop-cancel"), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+         // Fire loop-cancel hook.
+         //
+         // Pipeline-context reassignment + persistence policy (G7/G8/G10/D4):
+         //   - Continuing events (loop-start, loop-resume, iteration-start,
+         //     iteration-end, loop-error) REASSIGN pipelineContext so hook
+         //     mutations flow on to later events and into the agent env.
+         //   - D4 Option A (chosen): after EVERY continuing reassign we also
+         //     savePipelineContext(...) so hook mutations survive even if the
+         //     process crashes before the next save point. This makes the
+         //     loop-error→next-iteration propagation guarantee deterministic.
+         //   - Terminal events (loop-cancel, loop-abort, loop-stall, loop-end)
+         //     are fire-and-forget for REASSIGNMENT: the loop is exiting
+         //     immediately after, so there is no later consumer of their
+         //     returned context. They still RECEIVE the current
+         //     pipelineContext via the hook env, and the persisted file is
+         //     cleared right after (G11).
+         //   - R6: loop-cancel is terminal, so we ALSO fire loop-end with
+         //     RALPH_END_REASON=cancel here (the spec lists 'cancel' as a
+         //     loop-end reason). loop-error is NOT terminal (the loop
+         //     continues), so it never fires loop-end.
+         executeHooks({ event: "loop-cancel", env: buildHookEnv("loop-cancel"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+         executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "cancel" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+         clearPipelineContext(stateDir);
 
          // Use setImmediate to allow the abort event to propagate
          // then force exit. This is more reliable than process.exit()
          // directly in the signal handler with pending async operations.
          setImmediate(() => process.exit(0));
+      });
+
+      // S5: terminal cleanup for signals/errors not covered by the SIGINT
+      // handler above. Each is best-effort and idempotent: clear the
+      // persisted pipeline context so a crashed run does not leak context
+      // into the next unrelated run (G11), kill any in-flight agent child, and
+      // then exit. Registering these handlers overrides Bun's default signal
+      // behavior, so each MUST call process.exit() explicitly.
+      // (clearPipelineContext is a no-op when the file is already absent.)
+      const cleanupPipelineContext = (): void => {
+         try { clearPipelineContext(stateDir); } catch { /* best-effort */ }
+      };
+      const killInFlightChild = (): void => {
+         if (currentProc) {
+            try { process.kill(-currentProc.pid, "SIGKILL"); }
+            catch {
+               try { currentProc.kill("SIGKILL"); } catch { /* already exited */ }
+            }
+         }
+         if (currentHeartbeatTimer) {
+            try { clearInterval(currentHeartbeatTimer); } catch { /* best-effort */ }
+         }
+      };
+      process.on("SIGTERM", () => {
+         console.log("\nReceived SIGTERM, stopping Ralph loop...");
+         killInFlightChild();
+         cleanupPipelineContext();
+         try { clearState(); } catch { /* best-effort */ }
+         process.exit(1);
+      });
+      process.on("uncaughtException", (err) => {
+         console.error("Uncaught exception:", err);
+         killInFlightChild();
+         cleanupPipelineContext();
+         process.exit(1);
+      });
+      process.on("unhandledRejection", (reason) => {
+         console.error("Unhandled rejection:", reason);
+         killInFlightChild();
+         cleanupPipelineContext();
+         process.exit(1);
       });
 
       // Main loop
@@ -4363,7 +4452,8 @@ Unable to read ${currentTasksFileLabel()}
             console.log(`║  Total time: ${formatDurationLong(history.totalDurationMs)}`);
             console.log(`╚══════════════════════════════════════════════════════════════════╝`);
             // Fire loop-end hook
-            executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "max-iterations" }), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+            executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "max-iterations" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+            clearPipelineContext(stateDir);
             clearState();
             clearPendingQuestions();
             // Keep history for analysis via --status
@@ -4375,8 +4465,11 @@ Unable to read ${currentTasksFileLabel()}
          console.log(`\n🔄 Iteration ${state.iteration}${iterInfo}${minInfo}`);
          console.log("─".repeat(68));
 
-         // Fire iteration-start hook
-         executeHooks({ event: "iteration-start", env: buildHookEnv("iteration-start"), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+         // Fire iteration-start hook (G7: reassign — context may mutate, then
+         // flow into the agent spawn env via RALPH_PIPELINE_CONTEXT).
+         pipelineContext = executeHooks({ event: "iteration-start", env: buildHookEnv("iteration-start"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+         // D4 (Option A): persist after iteration-start reassign.
+         savePipelineContext(stateDir, pipelineContext);
 
          // Capture context at start of iteration (to only clear what was consumed)
          const contextAtStart = loadContext();
@@ -4449,6 +4542,10 @@ Unable to read ${currentTasksFileLabel()}
                filterPlugins: disablePlugins,
                allowAllPermissions: allowAllPermissions,
             });
+            // G1: thread the current pipeline context into the agent's environment
+            // so spawned agents can read/extend it. Placed after the iteration-start
+            // hook fires (which may have mutated pipelineContext).
+            env.RALPH_PIPELINE_CONTEXT = JSON.stringify(pipelineContext);
 
             console.log(`DEBUG: Agent Command: ${agentConfig.command}`);
             console.log(`DEBUG: Agent Args: ${JSON.stringify(cmdArgs)}`);
@@ -4501,8 +4598,8 @@ Unable to read ${currentTasksFileLabel()}
                // Handle stalling detection
                const isPreStartStalled = streamed.preStartStalled;
                if (streamed.stalled || isPreStartStalled) {
-                  const stallType = isPreStartStalled ? "Pre-start" : "";
-                  console.log(`\n🛑 ${stallType}Stalling detected for agent: ${currentAgent}`);
+                  const stallType = isPreStartStalled ? "Pre-start " : "";
+                  console.log(`\n🛑 ${stallType}stalling detected for agent: ${currentAgent}`);
 
                   // Record stalling event
                   const stallingEvent: StallingEvent = {
@@ -4580,15 +4677,19 @@ Unable to read ${currentTasksFileLabel()}
                       // Stop action (default)
                       console.log(`\n🛑 Stopping loop due to stalling`);
                       // Fire loop-stall hook
-                      executeHooks({ event: "loop-stall", env: buildHookEnv("loop-stall"), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+                      executeHooks({ event: "loop-stall", env: buildHookEnv("loop-stall"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
                       // Fire loop-end hook
-                      executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "stall" }), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+                      executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "stall" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+                      clearPipelineContext(stateDir);
                       state.active = false;
                       try { saveState(state); } catch { /* best-effort */ }
                       break;
                    }
                }
             } else {
+               // Non-streaming (buffered) path. The stall handler here is
+               // mutually exclusive with the streaming-path stall handler
+               // above (G3 verified): exactly one runs per iteration.
                const buffered = await streamProcessOutput(proc, proc.pid, {
                   compactTools: !verboseTools,
                   toolSummaryIntervalMs: 3000,
@@ -4610,8 +4711,8 @@ Unable to read ${currentTasksFileLabel()}
 
                const isPreStartStalled = buffered.preStartStalled;
                if (buffered.stalled || isPreStartStalled) {
-                  const stallType = isPreStartStalled ? "Pre-start" : "";
-                  console.log(`\n🛑 ${stallType}Stalling detected for agent: ${currentAgent}`);
+                  const stallType = isPreStartStalled ? "Pre-start " : "";
+                  console.log(`\n🛑 ${stallType}stalling detected for agent: ${currentAgent}`);
 
                   // Record stalling event
                   const stallingEvent: StallingEvent = {
@@ -4672,9 +4773,10 @@ Unable to read ${currentTasksFileLabel()}
                       // Stop action (default)
                       console.log(`\n🛑 Stopping loop due to stalling`);
                       // Fire loop-stall hook
-                      executeHooks({ event: "loop-stall", env: buildHookEnv("loop-stall"), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+                      executeHooks({ event: "loop-stall", env: buildHookEnv("loop-stall"), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
                       // Fire loop-end hook
-                      executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "stall" }), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+                      executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "stall" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+                      clearPipelineContext(stateDir);
                       state.active = false;
                       try { saveState(state); } catch { /* best-effort */ }
                       break;
@@ -4696,9 +4798,15 @@ Unable to read ${currentTasksFileLabel()}
 
             if (!streamOutput) {
                if (stderr) {
-                  console.error(stderr);
+                  // R2: filter any pipeline-context blocks from stderr before
+                  // printing, consistent with how hook output is filtered.
+                  const filteredStderr = filterPipelineContextFromOutput(stderr);
+                  if (filteredStderr.trim()) {
+                     console.error(filteredStderr);
+                  }
                }
-               console.log(result);
+               // R2: also filter stdout for consistency.
+               console.log(filterPipelineContextFromOutput(result));
             }
 
             const combinedOutput = `${result}\n${stderr}`;
@@ -4757,6 +4865,7 @@ Unable to read ${currentTasksFileLabel()}
                }),
                cwd: process.cwd(),
                disabled: disableHooks,
+               verbose: verboseHooks,
                pipelineContext,
             });
 
@@ -4852,9 +4961,10 @@ Unable to read ${currentTasksFileLabel()}
                console.log(`║  Total time: ${formatDurationLong(history.totalDurationMs)}`);
                console.log(`╚══════════════════════════════════════════════════════════════════╝`);
                // Fire loop-abort hook
-               executeHooks({ event: "loop-abort", env: buildHookEnv("loop-abort", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs) }), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+               executeHooks({ event: "loop-abort", env: buildHookEnv("loop-abort", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs) }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
                // Fire loop-end hook
-               executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "abort" }), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+               executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "abort" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+               clearPipelineContext(stateDir);
                clearState();
                clearHistory();
                clearContext();
@@ -4956,7 +5066,8 @@ Unable to read ${currentTasksFileLabel()}
                          console.log(`║  ✅ Review approved! Loop completing.`);
                          console.log(`╚══════════════════════════════════════════════════════════════════╝`);
                          // Fire loop-end hook
-                         executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+                         executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+                         clearPipelineContext(stateDir);
                          const defaultStateDir = join(process.cwd(), ".ralph");
                          if (stateDirInput === defaultStateDir) {
                             clearState();
@@ -4987,7 +5098,8 @@ Unable to read ${currentTasksFileLabel()}
                       console.log(`║  Total time: ${formatDurationLong(history.totalDurationMs)}`);
                       console.log(`╚══════════════════════════════════════════════════════════════════╝`);
                       // Fire loop-end hook
-                      executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+                      executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+                      clearPipelineContext(stateDir);
                       const defaultStateDir = join(process.cwd(), ".ralph");
                       if (stateDirInput === defaultStateDir) {
                          clearState();
@@ -5008,7 +5120,8 @@ Unable to read ${currentTasksFileLabel()}
                } else {
                   // Goal complete — clean up and exit
                   // Fire loop-end hook
-                  executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+                  executeHooks({ event: "loop-end", env: buildHookEnv("loop-end", { RALPH_TOTAL_DURATION_MS: String(history.totalDurationMs), RALPH_END_REASON: "completion" }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+                  clearPipelineContext(stateDir);
                   const defaultStateDir = join(process.cwd(), ".ralph");
                   if (stateDirInput === defaultStateDir) {
                      clearState();
@@ -5097,7 +5210,10 @@ Unable to read ${currentTasksFileLabel()}
             }
             console.error(`\n❌ Error in iteration ${state.iteration}:`, error);
             // Fire loop-error hook
-            executeHooks({ event: "loop-error", env: buildHookEnv("loop-error", { RALPH_ERROR_MESSAGE: String(error).substring(0, 500) }), cwd: process.cwd(), disabled: disableHooks, pipelineContext });
+            pipelineContext = executeHooks({ event: "loop-error", env: buildHookEnv("loop-error", { RALPH_ERROR_MESSAGE: String(error).substring(0, 500) }), cwd: process.cwd(), disabled: disableHooks, verbose: verboseHooks, pipelineContext });
+            // D4 (Option A): persist after loop-error reassign so the mutated
+            // context reaches the next iteration's agent env deterministically.
+            savePipelineContext(stateDir, pipelineContext);
             console.log("Continuing to next iteration...");
 
             // Track failed iteration in history to keep state/history in sync
@@ -5134,6 +5250,9 @@ Unable to read ${currentTasksFileLabel()}
    extraAgentFlags = [...extraAgentFlags, ...passthroughAgentFlags];
    runRalphLoop().catch(error => {
       console.error("Fatal error:", error);
+      // D9: clear persisted pipeline context on the fatal-error path so a
+      // crashed run does not leak context into the next unrelated run.
+      try { clearPipelineContext(stateDir); } catch { /* best-effort */ }
       clearState();
       process.exit(1);
    });

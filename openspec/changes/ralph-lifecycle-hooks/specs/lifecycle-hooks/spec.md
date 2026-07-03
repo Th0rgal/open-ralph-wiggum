@@ -67,7 +67,7 @@ Event-specific variables:
 - **THEN** `loop-end` hooks receive `RALPH_END_REASON=max-iterations` and `RALPH_TOTAL_DURATION_MS=<ms>`
 
 ### Requirement: Hook output printed to console
-Hook stdout and stderr SHALL be printed to the console. Each line SHALL be prefixed with `[hook:<name>]` where `<name>` is the hook's filename without extension.
+Hook stdout and stderr SHALL be printed to the console. Each line SHALL be prefixed with `[hook:<priority>-<name>]` where `<priority>` is the hook's filename priority number and `<name>` is the hook's filename without extension (e.g. a file `10-notify.sh` produces the prefix `[hook:10-notify]`).
 
 #### Scenario: Hook stdout is prefixed and printed
 - **WHEN** hook `10-notify.sh` outputs "Deployment started"
@@ -132,8 +132,12 @@ The system SHALL define and fire hooks for these lifecycle events:
 
 #### Scenario: loop-cancel fires on SIGINT
 - **WHEN** user presses Ctrl+C during an iteration
-- **THEN** `loop-cancel` hooks fire before process exits
+- **THEN** `loop-cancel` hooks fire, followed by `loop-end` hooks with `RALPH_END_REASON=cancel`, before the process exits
 
 #### Scenario: loop-error fires on unhandled error
 - **WHEN** an iteration throws an unhandled exception
 - **THEN** `loop-error` hooks fire with error context before continuing to next iteration
+
+#### Scenario: loop-error is non-terminal and never fires loop-end
+- **WHEN** an iteration throws an unhandled exception
+- **THEN** the loop continues to the next iteration and `loop-end` is NOT fired (there is no `error` loop-end reason); `loop-error` is itself the error signal

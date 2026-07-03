@@ -228,6 +228,81 @@ echo "agent=$RALPH_AGENT"
    });
 });
 
+// =============================================================================
+// D2 (round 3): spec scenario "Hook stderr is prefixed and printed"
+// =============================================================================
+
+describe("executeHooks stderr prefix (D2)", () => {
+   test("stderr-originated line gets the [hook:<priority>-<name>] prefix", () => {
+      // Spec scenario: hook `20-audit.sh` outputs "Warning: slow network" to
+      // stderr → console shows `[hook:20-audit] Warning: slow network`.
+      const script = "#!/bin/bash\n>&2 echo 'Warning: slow network'\n";
+      createHook("local", "iteration-end", "20-audit.sh", script);
+
+      const errs: string[] = [];
+      const origErr = console.error;
+      console.error = (...args: any[]) => { errs.push(args.join(" ")); };
+
+      try {
+         executeHooks({
+            event: "iteration-end",
+            env: { RALPH_EVENT: "iteration-end", RALPH_ITERATION: "1", RALPH_AGENT: "opencode", RALPH_MODEL: "", RALPH_EXIT_CODE: "0", RALPH_COMPLETION_DETECTED: "false", RALPH_DURATION_MS: "10", RALPH_STATE_DIR: "/tmp", RALPH_CWD: CWD },
+            cwd: CWD,
+            globalConfigDir: GLOBAL_DIR,
+         });
+      } finally {
+         console.error = origErr;
+      }
+
+      // The exact prefixed line must appear on the error stream.
+      expect(errs.some(e => e === "[hook:20-audit] Warning: slow network")).toBe(true);
+   });
+});
+
+// =============================================================================
+// D3 (round 3): spec scenario "Hook crashes" (signal variant)
+// =============================================================================
+
+describe("executeHooks signal kill (D3)", () => {
+   test("hook killed by signal prints 'killed by signal N' warning and loop continues", () => {
+      // Spec scenario: hook `20-audit.sh` is killed by signal → system prints
+      // warning and continues loop normally. The hook self-terminates with
+      // SIGTERM so the `if (result.signal) console.warn(...)` branch fires
+      // immediately (no waiting on the 30s timeout).
+      const script = "#!/bin/bash\nkill -TERM $$\n";
+      createHook("local", "loop-start", "20-audit.sh", script);
+
+      // A second hook proves the loop CONTINUES past the killed hook.
+      createHook("local", "loop-start", "30-continue.sh", "#!/bin/bash\necho 'continued'\n");
+
+      const warnings: string[] = [];
+      const logs: string[] = [];
+      const origWarn = console.warn;
+      const origLog = console.log;
+      console.warn = (...args: any[]) => { warnings.push(args.join(" ")); };
+      console.log = (...args: any[]) => { logs.push(args.join(" ")); };
+
+      try {
+         expect(() => {
+            executeHooks({
+               event: "loop-start",
+               env: { RALPH_EVENT: "loop-start", RALPH_ITERATION: "0", RALPH_AGENT: "opencode", RALPH_MODEL: "", RALPH_STATE_DIR: "/tmp", RALPH_CWD: CWD },
+               cwd: CWD,
+               globalConfigDir: GLOBAL_DIR,
+            });
+         }).not.toThrow();
+      } finally {
+         console.warn = origWarn;
+         console.log = origLog;
+      }
+
+      // (a) the 'killed by signal N' warning is printed.
+      expect(warnings.some(w => /\[hook:20-audit\] killed by signal SIGTERM/.test(w))).toBe(true);
+      // (b) the loop continued — the second hook still ran.
+      expect(logs.some(l => l.includes("[hook:30-continue] continued"))).toBe(true);
+   });
+});
+
 describe("listAllHooks", () => {
    test("returns empty map when no hooks exist", () => {
       const result = listAllHooks(CWD, GLOBAL_DIR);

@@ -9,7 +9,6 @@ function cleanupPath(path: string) {
     rmSync(path, { recursive: true, force: true });
   } catch {}
 }
-
 function createFakeAgent(tempDir: string, exitCode: 0 | 1) {
   if (process.platform === "win32") {
     const cmdPath = join(tempDir, `fake-agent-${exitCode}.cmd`);
@@ -45,6 +44,40 @@ async function runRalph(tempDir: string, args: string[]) {
       ...process.env,
       NODE_ENV: "test",
       // Env override must be absolute path — resolves relative to cwd
+      RALPH_OPENCODE_BINARY: failingAgent,
+      RALPH_CODEX_BINARY: failingAgent,
+      RALPH_CLAUDE_BINARY: failingAgent,
+      RALPH_COPILOT_BINARY: failingAgent,
+    },
+  });
+
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  const exitCode = await proc.exited;
+
+  return { stdout, stderr, exitCode, output: `${stdout}\n${stderr}` };
+}
+
+async function runRalphTs(tempDir: string, args: string[]) {
+  // Spawns `bun run ralph.ts` instead of the compiled bin/ralph binary.
+  // The compiled binary bakes NODE_ENV at build time (cannot be overridden at
+  // runtime), so it cannot honour NODE_ENV=test which short-circuits
+  // sleepForStallRetry(). For tests that exercise the DEFAULT stall-retry
+  // interval (15 min) we must run via `bun run` so NODE_ENV=test takes effect
+  // at runtime and the 15-minute sleep becomes 0ms.
+  const failingAgent = createFakeAgent(tempDir, 1);
+  const ralphPath = join(process.cwd(), "ralph.ts");
+  const bunPath = process.execPath;
+  const proc = Bun.spawn({
+    cmd: [bunPath, "run", ralphPath, ...args],
+    cwd: process.cwd(),
+    stdout: "pipe",
+    stderr: "pipe",
+    env: {
+      ...process.env,
+      NODE_ENV: "test",
       RALPH_OPENCODE_BINARY: failingAgent,
       RALPH_CODEX_BINARY: failingAgent,
       RALPH_CLAUDE_BINARY: failingAgent,
@@ -126,29 +159,32 @@ describe("stall retries", () => {
     expect(result.exitCode).toBe(0);
   }, { timeout: 30_000 });
 
-  // Skipped: pre-start stalling fires at stallingTimeout/3 ≈ 12min before fake-agent
-  // produces output. Requires fix to pre-start timeout behavior (default should be shorter).
-  it.skip("uses the default 15 minute stall interval when no custom value is provided", async () => {
-    const result = await runRalph(tempDir, [
-      "--state-dir", join(tempDir, ".ralph"),
-      "exercise default stall interval",
-      "--agent",
-      "opencode",
-      "--model",
-      "alpha",
-      "--max-iterations",
-      "2",
-      "--stall-retries",
-      "--no-stream",
-      "--no-questions",
-      "--no-commit",
-      "--pre-start-timeout", "5000",
-    ]);
+  // Exercises the DEFAULT stall_retry_minutes (15 min). In NODE_ENV=test the
+  // actual sleep is short-circuited to 0ms (see sleepForStallRetry in ralph.ts),
+  // so the 15-minute interval is validated via the log line without waiting.
+  it("uses the default 15 minute stall interval when no custom value is provided", async () => {
+    writeFileSync(
+      join(stateDir, "config.toml"),
+      [
+        'prompt = "exercise default stall interval"',
+        'rotation = ["opencode:alpha", "codex:beta"]',
+        "max_iterations = 5",
+        "stream = false",
+        "questions = false",
+        "no_commit = true",
+        "stall_retries = true",
+        // stall_retry_minutes intentionally omitted -> defaults to 15
+        'pre_start_timeout = 5000',
+      ].join("\n"),
+    );
 
-    expect(result.exitCode).toBe(1);  // Agent exit code propagates
+    const result = await runRalphTs(tempDir, ["--state-dir", join(tempDir, ".ralph")]);
+
+    // Ralph exits 0 after exhausting fallbacks (exit 1 from agent gets reported but Ralph exits 0).
+    expect(result.exitCode).toBe(0);
     expect(result.output).toContain("All fallbacks exhausted. Stalling for 15 minute(s) before retrying.");
     expect(result.output).toContain("Cleared fallback blacklist. Restarting fallback cycle.");
-  });
+  }, { timeout: 30_000 });
 
   // Spawns real bin/ralph binary (~3s observed, flaky at default 5s bun:test timeout)
   it("allows current stall retry flags to override persisted state when resuming", async () => {

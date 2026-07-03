@@ -3,6 +3,8 @@ import { existsSync, unlinkSync, writeFileSync, mkdirSync, rmdirSync, statSync, 
 import { join } from 'path';
 import { tmpdir } from 'os';
 
+const fakeAgentPath = join(process.cwd(), 'tests/helpers/fake-agent.sh');
+
 function wait(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -127,13 +129,35 @@ describe('State Directory Validation', () => {
     });
   });
 
-  describe.skip('Normal operation', () => {
+  describe('Normal operation', () => {
+    function writeAgentConfig() {
+      // Minimal agents.json pointing at fake-agent.sh (default "complete" mode emits
+      // <promise>COMPLETE</promise> so the loop exits cleanly).
+      writeFileSync(
+        join(tempDir, 'test-agents.json'),
+        JSON.stringify({
+          version: '1.0',
+          agents: [
+            {
+              type: 'codex',
+              command: fakeAgentPath,
+              configName: 'Fake Codex',
+              argsTemplate: 'codex',
+              envTemplate: 'default',
+              parsePattern: 'codex',
+            },
+          ],
+        }, null, 2),
+      );
+    }
+
     it('creates .ralph directory if it does not exist', async () => {
       // Ensure .ralph does not exist
       expect(existsSync(stateDir)).toBe(false);
+      writeAgentConfig();
 
       const proc = Bun.spawn({
-        cmd: ['bun', 'run', join(process.cwd(), 'ralph.ts'), 'echo hello', '--max-iterations', '1'],
+        cmd: ['bun', 'run', join(process.cwd(), 'ralph.ts'), '--config', join(tempDir, 'test-agents.json'), '--no-commit', '--agent', 'codex', '--model', 'complete', '--max-iterations', '1', 'echo hello'],
         stdout: 'pipe',
         stderr: 'pipe',
         env: { ...process.env, NODE_ENV: 'test' },
@@ -156,13 +180,14 @@ describe('State Directory Validation', () => {
     it('works when .ralph already exists as a directory', async () => {
       // Pre-create .ralph as a directory
       mkdirSync(stateDir, { recursive: true });
+      writeAgentConfig();
       
       expect(existsSync(stateDir)).toBe(true);
       const statsBefore = statSync(stateDir);
       expect(statsBefore.isDirectory()).toBe(true);
 
       const proc = Bun.spawn({
-        cmd: ['bun', 'run', join(process.cwd(), 'ralph.ts'), 'echo hello', '--max-iterations', '1'],
+        cmd: ['bun', 'run', join(process.cwd(), 'ralph.ts'), '--config', join(tempDir, 'test-agents.json'), '--no-commit', '--agent', 'codex', '--model', 'complete', '--max-iterations', '1', 'echo hello'],
         stdout: 'pipe',
         stderr: 'pipe',
         env: { ...process.env, NODE_ENV: 'test' },
@@ -174,8 +199,9 @@ describe('State Directory Validation', () => {
       proc.kill('SIGINT');
       const exitCode = await proc.exited;
       
-      // Should succeed (exit code 0 or 130 for SIGINT cleanup)
-      expect([0, 130, 1]).toContain(exitCode);
+      // Should succeed (exit code 0 or 130 for SIGINT cleanup). A real fake agent
+      // is wired up now, so an unexpected abort (exit 1) fails the test.
+      expect([0, 130]).toContain(exitCode);
     });
   });
 });
