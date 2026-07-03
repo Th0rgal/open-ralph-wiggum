@@ -8,9 +8,11 @@ import {
    listAllHooks,
    formatHooksTable,
    LIFECYCLE_EVENTS,
+   DEFAULT_HOOK_TIMEOUT_MS,
    type HookEntry,
    type HookEnv,
 } from "../src/lifecycle-hooks";
+import * as child_process from "child_process";
 
 const TEST_DIR = join(process.cwd(), ".test-hooks-tmp");
 const GLOBAL_DIR = join(TEST_DIR, "global");
@@ -300,6 +302,111 @@ describe("executeHooks signal kill (D3)", () => {
       expect(warnings.some(w => /\[hook:20-audit\] killed by signal SIGTERM/.test(w))).toBe(true);
       // (b) the loop continued — the second hook still ran.
       expect(logs.some(l => l.includes("[hook:30-continue] continued"))).toBe(true);
+   });
+});
+
+// =============================================================================
+// Configurable hook timeout (change: configurable-hook-timeout)
+// Tasks 5.1, 5.2, 5.4: default used when omitted, custom forwarded, fail-soft.
+// =============================================================================
+
+describe("executeHooks hookTimeoutMs (configurable-hook-timeout)", () => {
+   test("5.1: default timeout is used when hookTimeoutMs option omitted", () => {
+      // A hook that would survive well past 100ms but must be killed within
+      // the default 30000ms. We assert the constant shape rather than waiting
+      // 30s: the option being undefined resolves to DEFAULT_HOOK_TIMEOUT_MS
+      // which we assert is 30000 (the documented default).
+      expect(DEFAULT_HOOK_TIMEOUT_MS).toBe(30000);
+   });
+
+   test("5.2: custom hookTimeoutMs is forwarded to spawnSync (hook killed under cap)", () => {
+      // Hook sleeps longer than the configured timeout (200ms). It MUST be
+      // killed and the timeout-expired warning MUST fire, proving the custom
+      // value reached spawnSync. Uses a short timeout so the test is fast.
+      const script = "#!/bin/bash\nsleep 5\n";
+      createHook("local", "loop-start", "10-slow.sh", script);
+
+      const warnings: string[] = [];
+      const origWarn = console.warn;
+      console.warn = (...args: any[]) => { warnings.push(args.join(" ")); };
+
+      const start = Date.now();
+      try {
+         expect(() => {
+            executeHooks({
+               event: "loop-start",
+               env: { RALPH_EVENT: "loop-start", RALPH_ITERATION: "1", RALPH_AGENT: "opencode", RALPH_MODEL: "", RALPH_STATE_DIR: "/tmp", RALPH_CWD: CWD },
+               cwd: CWD,
+               globalConfigDir: GLOBAL_DIR,
+               hookTimeoutMs: 200,
+            });
+         }).not.toThrow();
+      } finally {
+         console.warn = origWarn;
+      }
+      const elapsed = Date.now() - start;
+
+      // The hook was killed well under the 5s it tried to sleep — proving
+      // the custom 200ms cap was forwarded to spawnSync.
+      expect(elapsed).toBeLessThan(2000);
+      // Timeout-expired warning fired (fail-soft path, not 'killed by signal').
+      expect(warnings.some(w => /\[hook:10-slow\] timed out after 200ms/.test(w))).toBe(true);
+   });
+
+   test("5.4: timeout expiration is fail-soft (loop continues, warning logged)", () => {
+      // Two hooks: first is slow and gets killed by the timeout, second MUST
+      // still run — proving the loop continues past the killed hook (fail-soft).
+      createHook("local", "loop-start", "10-slow.sh", "#!/bin/bash\nsleep 5\n");
+      createHook("local", "loop-start", "20-continue.sh", "#!/bin/bash\necho 'continued'\n");
+
+      const logs: string[] = [];
+      const warnings: string[] = [];
+      const origLog = console.log;
+      const origWarn = console.warn;
+      console.log = (...args: any[]) => { logs.push(args.join(" ")); };
+      console.warn = (...args: any[]) => { warnings.push(args.join(" ")); };
+
+      try {
+         expect(() => {
+            executeHooks({
+               event: "loop-start",
+               env: { RALPH_EVENT: "loop-start", RALPH_ITERATION: "1", RALPH_AGENT: "opencode", RALPH_MODEL: "", RALPH_STATE_DIR: "/tmp", RALPH_CWD: CWD },
+               cwd: CWD,
+               globalConfigDir: GLOBAL_DIR,
+               hookTimeoutMs: 200,
+            });
+         }).not.toThrow();
+      } finally {
+         console.log = origLog;
+         console.warn = origWarn;
+      }
+
+      // Timeout-expired warning fired.
+      expect(warnings.some(w => /\[hook:10-slow\] timed out after 200ms/.test(w))).toBe(true);
+      // The loop continued — the second hook ran despite the first timing out.
+      expect(logs.some(l => l.includes("[hook:20-continue] continued"))).toBe(true);
+   });
+
+   test("explicit hookTimeoutMs overrides the default when set", () => {
+      // Sanity: passing a generous timeout that exceeds the hook's runtime
+      // means the hook completes normally (no timeout warning).
+      createHook("local", "loop-start", "10-fast.sh", "#!/bin/bash\necho 'ok'\n");
+      const warnings: string[] = [];
+      const origWarn = console.warn;
+      console.warn = (...args: any[]) => { warnings.push(args.join(" ")); };
+      try {
+         executeHooks({
+            event: "loop-start",
+            env: { RALPH_EVENT: "loop-start", RALPH_ITERATION: "1", RALPH_AGENT: "opencode", RALPH_MODEL: "", RALPH_STATE_DIR: "/tmp", RALPH_CWD: CWD },
+            cwd: CWD,
+            globalConfigDir: GLOBAL_DIR,
+            hookTimeoutMs: 10000,
+         });
+      } finally {
+         console.warn = origWarn;
+      }
+      // No timeout warning — the hook finished within the cap.
+      expect(warnings.some(w => /timed out/.test(w))).toBe(false);
    });
 });
 

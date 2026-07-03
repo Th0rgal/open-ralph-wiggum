@@ -5,6 +5,43 @@
 import { existsSync, readFileSync } from "fs";
 import { dirname, isAbsolute, resolve } from "path";
 import type { AgentType, RalphRuntimeConfig, ReviewConfig, ReviewVoter } from "./types";
+import { DEFAULT_HOOK_TIMEOUT_MS } from "./lifecycle-hooks";
+
+export { DEFAULT_HOOK_TIMEOUT_MS };
+
+/**
+ * Resolve per-hook execution timeout (ms). Design D2.
+ *
+ * Priority (first valid wins):
+ *  1. cliFlag (--hook-timeout) — invalid / <=0 throws (explicit user action).
+ *  2. process.env.RALPH_HOOK_TIMEOUT_MS — invalid / <=0 warns + falls back.
+ *  3. DEFAULT_HOOK_TIMEOUT_MS (30000).
+ */
+export function resolveHookTimeoutMs(cliFlag: string | undefined): number {
+   if (cliFlag !== undefined && cliFlag !== "") {
+      const n = Number(cliFlag);
+      if (!Number.isInteger(n) || n <= 0) {
+         throw new Error(
+            `--hook-timeout requires a positive integer (ms); got '${cliFlag}'`
+         );
+      }
+      return n;
+   }
+
+   const envRaw = process.env.RALPH_HOOK_TIMEOUT_MS;
+   if (envRaw !== undefined && envRaw !== "") {
+      const n = Number(envRaw);
+      if (!Number.isInteger(n) || n <= 0) {
+         console.warn(
+            `[hooks] RALPH_HOOK_TIMEOUT_MS='${envRaw}' is not a positive integer; falling back to ${DEFAULT_HOOK_TIMEOUT_MS}ms`
+         );
+         return DEFAULT_HOOK_TIMEOUT_MS;
+      }
+      return n;
+   }
+
+   return DEFAULT_HOOK_TIMEOUT_MS;
+}
 
 export function normalizeRuntimeConfigValue(path: string, value: unknown, expected: "string" | "number" | "boolean" | "string[]"): string | number | boolean | string[] | undefined {
    if (value === undefined) return undefined;

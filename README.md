@@ -576,6 +576,26 @@ if [ "$RALPH_END_REASON" = "completion" ]; then
 fi
 ```
 
+#### Hook Timeout
+
+Each hook has a per-run execution timeout. Default is `30000`ms (30s). Override via:
+
+- CLI flag: `--hook-timeout <ms>` (highest priority; invalid value → hard error)
+- Env var: `RALPH_HOOK_TIMEOUT_MS=<ms>` (invalid value → warn + fall back to default)
+
+```bash
+# Raise cap to 5 minutes
+ralph "deploy hook" --hook-timeout 300000
+
+# Same via env
+RALPH_HOOK_TIMEOUT_MS=300000 ralph "deploy hook"
+
+# Tighten to 10s
+ralph "quick check" --hook-timeout 10000
+```
+
+Timeout expiration is fail-soft: the hook is killed, a `[hook:<priority>-<name>] timed out after <ms>ms` warning is logged, and the loop continues. Sane upper bound: ≤300000 (5 min); for longer work use `pueue add`/external supervisor and exit the hook fast.
+
 #### CLI Commands
 
 ```bash
@@ -590,6 +610,9 @@ ralph hooks events
 
 # Disable all hooks for a run
 ralph "task" --no-hooks
+
+# Raise per-hook timeout to 60s for this run
+ralph "task" --hook-timeout 60000
 ```
 
 #### Hook Output
@@ -602,6 +625,32 @@ Hook stdout/stderr is printed to console with a prefix:
 ```
 
 Hook failures (non-zero exit) are logged as warnings but do NOT block the loop.
+
+#### Hook Timeout
+
+Each hook has a per-execution timeout. When it expires, the hook is killed and the run logs `[hook:<priority>-<name>] timed out after <ms>ms`, then continues (fail-soft — no new failure mode).
+
+**Resolution order (first valid wins):**
+
+1. CLI flag `--hook-timeout <ms>` (highest priority)
+2. Environment variable `RALPH_HOOK_TIMEOUT_MS`
+3. Default `30000` ms (30s)
+
+The value MUST be a positive integer in milliseconds.
+
+- A bad **CLI flag** (non-integer, `0`, negative, fractional) → ralph exits non-zero with a parse error. The CLI is an explicit user action, so typos fail loud and early.
+- A bad **env var** (same invalid shapes) → ralph logs a warning and falls back to the 30s default. Env is often inherited/templated, so a misconfigured shell won't brick every run.
+
+**Recommended upper bound:** keep hooks under ~5 minutes (`300000`ms). There is no hard cap — power users running deploy/CI hooks may legitimately need longer — but an absurd value risks hanging the loop.
+
+```bash
+# Raise the cap to 60s via flag for one run
+ralph "task" --hook-timeout 60000
+
+# Raise the cap via env (persists across runs)
+export RALPH_HOOK_TIMEOUT_MS=60000
+ralph "task"
+```
 
 #### Pipeline Context
 

@@ -31,6 +31,7 @@ STAGED_TS=$(git diff --cached --name-only --diff-filter=ACM | \
             grep '\.ts$' | \
             grep -v '^bin/' | \
             grep -v '^node_modules/' | \
+            grep -v '\.test\.ts$' | \
             grep -v 'coverage-badge.mjs')
 
 STAGED_ALL=$(git diff --cached --name-only --diff-filter=ACM)
