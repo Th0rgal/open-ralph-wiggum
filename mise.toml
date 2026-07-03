@@ -96,3 +96,11 @@ bun build ralph.ts --outfile bin/ralph.js --target bun
 cp bin/ralph.js ~/.local/bin/ralph-prod.js
 echo "Deployed: ~/.local/bin/ralph-prod.js"
 '''
+
+[tasks."smoke:dev"]
+description = "Post-deploy smoke test for ralph-dev binary (hooks + configurable timeout)"
+run = 'bash scripts/smoke-deploy.sh ~/.local/bin/ralph-dev.js'
+
+[tasks."smoke:prod"]
+description = "Post-deploy smoke test for ralph-prod binary (hooks + configurable timeout)"
+run = 'bash scripts/smoke-deploy.sh ~/.local/bin/ralph-prod.js'
