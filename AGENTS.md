@@ -220,11 +220,12 @@ This project is indexed by GitNexus as **open-ralph-wiggum** (3779 symbols, 5221
 
 ## Lifecycle Hooks Architecture
 
-The hooks system (`src/lifecycle-hooks.ts`) enables bash-based extensibility at 9 lifecycle events.
+The hooks system (`src/lifecycle-hooks.ts`) enables bash-based extensibility at 9 lifecycle events with pipeline context support.
 
 **Key files:**
-- `src/lifecycle-hooks.ts` — Core engine: discovery, validation, execution
+- `src/lifecycle-hooks.ts` — Core engine: discovery, validation, execution, pipeline context
 - `tests/lifecycle-hooks.test.ts` — Unit tests (21 tests)
+- `tests/pipeline-context.test.ts` — Pipeline context tests (35 tests)
 - `examples/hooks/` — Example hook scripts
 
 **Architecture:**
@@ -235,6 +236,14 @@ The hooks system (`src/lifecycle-hooks.ts`) enables bash-based extensibility at 
 - Execution: `spawnSync("bash", [hookPath])` with 30s timeout, output prefixed with `[hook:<name>]`
 - Failures: logged as warnings, never block the loop
 
+**Pipeline Context:**
+- Middleware-style data flow through hooks
+- Context passed via `RALPH_PIPELINE_CONTEXT` env var (JSON)
+- Hooks output context using delimiter pattern: `---RALPH_PIPELINE_CONTEXT---` / `---END_PIPELINE_CONTEXT---`
+- Context persists to `.ralph/pipeline-context.json` after each iteration
+- Shallow merge with last-write-wins semantics
+- CLI: `ralph pipeline show`, `ralph pipeline clear`
+
 **Events:** `loop-start`, `loop-end`, `iteration-start`, `iteration-end`, `loop-resume`, `loop-abort`, `loop-stall`, `loop-error`, `loop-cancel`
 
-**CLI:** `ralph hooks list [--event <name>]`, `ralph hooks events`, `--no-hooks` flag
+**CLI:** `ralph hooks list [--event <name>]`, `ralph hooks events`, `ralph pipeline show|clear`, `--no-hooks` flag
