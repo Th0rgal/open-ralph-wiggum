@@ -375,7 +375,7 @@ export function executeHooks(options: ExecuteHooksOptions): PipelineContext {
 
    if (hooks.length === 0) return pipelineContext;
 
-   const hookTimeoutMs = options.hookTimeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
+   const hookTimeoutMs = options.hookTimeoutMs || DEFAULT_HOOK_TIMEOUT_MS;
 
    for (const hook of hooks) {
       pipelineContext = runHook(hook, env, cwd, pipelineContext, hookTimeoutMs, verbose);
@@ -429,6 +429,7 @@ function runHook(
          env: hookEnv,
          encoding: "utf-8",
          timeout: hookTimeoutMs,
+         killSignal: "SIGKILL",
       });
       const elapsed = performance.now() - hookStart;
 
@@ -473,18 +474,18 @@ function runHook(
          console.warn(`${prefix} exited with code ${result.status}`);
       }
 
-      // Handle signal termination. spawnSync sets signal='SIGTERM' both when
-      // the hook self-kills and when spawnSync itself enforces the timeout.
-      // Distinguish the two: on timeout spawnSync also sets error.code=ETIMEDOUT
-      // (Node >=14). Fall back to an elapsed heuristic if error is missing.
-      // Guard the heuristic so a very small hookTimeoutMs (<50ms) doesn't make
-      // the threshold negative and thus always-true (which would misclassify a
-      // self-SIGTERM as a timeout).
+      // Handle signal termination. spawnSync sends killSignal (SIGKILL) on
+      // timeout, which cannot be trapped — so a hook that ignores SIGTERM
+      // cannot hang Ralph. On timeout spawnSync also sets error.code=ETIMEDOUT
+      // (Node >=14); that is the authoritative signal. The elapsed heuristic is
+      // a defensive fallback ONLY when error is absent (Bun edge cases),
+      // guarded so a very small hookTimeoutMs (<50ms) doesn't make the
+      // threshold negative and thus always-true.
       if (result.signal) {
          const errCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
          const elapsedHeuristicOK = hookTimeoutMs > 50 && elapsed >= hookTimeoutMs - 50;
-         const timedOut = result.signal === "SIGTERM" &&
-            (errCode === "ETIMEDOUT" || elapsedHeuristicOK);
+         const timedOut = errCode === "ETIMEDOUT" ||
+            (result.error === undefined && elapsedHeuristicOK);
          if (timedOut) {
             console.warn(`${prefix} timed out after ${hookTimeoutMs}ms`);
          } else {
