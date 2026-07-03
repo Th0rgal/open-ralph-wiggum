@@ -423,14 +423,14 @@ function runHook(
    }
 
    try {
-      const hookStart = Date.now();
+      const hookStart = performance.now();
       const result = spawnSync("bash", [hook.filePath], {
          cwd,
          env: hookEnv,
          encoding: "utf-8",
          timeout: hookTimeoutMs,
       });
-      const elapsed = Date.now() - hookStart;
+      const elapsed = performance.now() - hookStart;
 
       // D5: parse pipeline context from BOTH stdout and stderr. Spec requires
       // "All context blocks SHALL be filtered from printed output" — that
@@ -477,10 +477,14 @@ function runHook(
       // the hook self-kills and when spawnSync itself enforces the timeout.
       // Distinguish the two: on timeout spawnSync also sets error.code=ETIMEDOUT
       // (Node >=14). Fall back to an elapsed heuristic if error is missing.
+      // Guard the heuristic so a very small hookTimeoutMs (<50ms) doesn't make
+      // the threshold negative and thus always-true (which would misclassify a
+      // self-SIGTERM as a timeout).
       if (result.signal) {
          const errCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+         const elapsedHeuristicOK = hookTimeoutMs > 50 && elapsed >= hookTimeoutMs - 50;
          const timedOut = result.signal === "SIGTERM" &&
-            (errCode === "ETIMEDOUT" || elapsed >= hookTimeoutMs - 50);
+            (errCode === "ETIMEDOUT" || elapsedHeuristicOK);
          if (timedOut) {
             console.warn(`${prefix} timed out after ${hookTimeoutMs}ms`);
          } else {
