@@ -3,9 +3,10 @@
  *
  * Discovers, validates, and executes bash-based lifecycle hooks
  * from global and local scopes with priority ordering.
+ * Supports pipeline context that flows through hooks like middleware.
  */
 
-import { existsSync, readdirSync, statSync } from "fs";
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { spawnSync } from "child_process";
 
@@ -43,6 +44,9 @@ export interface HookEntry {
    filePath: string;
 }
 
+/** Pipeline context that flows through hooks and iterations */
+export type PipelineContext = Record<string, any>;
+
 /** Environment variables passed to hooks */
 export interface HookEnv {
    /** Event name */
@@ -69,6 +73,8 @@ export interface HookEnv {
    RALPH_END_REASON?: "completion" | "max-iterations" | "abort" | "stall" | "cancel" | "error";
    /** Error message (loop-error only) */
    RALPH_ERROR_MESSAGE?: string;
+   /** Pipeline context as JSON string */
+   RALPH_PIPELINE_CONTEXT?: string;
 }
 
 /** Options for hook discovery */
@@ -93,6 +99,10 @@ export interface ExecuteHooksOptions {
    globalConfigDir?: string;
    /** Whether hooks are disabled (--no-hooks) */
    disabled?: boolean;
+   /** Pipeline context (flows through hooks) */
+   pipelineContext?: PipelineContext;
+   /** Verbose hook logging */
+   verbose?: boolean;
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -107,6 +117,105 @@ const LOCAL_HOOKS_DIR = ".ralph/hooks";
 
 /** Regex to parse priority from filename: <priority>-<name>.sh */
 const HOOK_FILENAME_RE = /^(\d+)-(.+)\.sh$/;
+
+// ── Pipeline Context Constants ───────────────────────────────────────────────
+
+/** Delimiter markers for pipeline context output in hooks */
+export const PIPELINE_CONTEXT_START = "---RALPH_PIPELINE_CONTEXT---";
+export const PIPELINE_CONTEXT_END = "---END_PIPELINE_CONTEXT---";
+
+/** Filename for pipeline context persistence */
+export const PIPELINE_CONTEXT_FILE = "pipeline-context.json";
+
+// ── Pipeline Context Functions ───────────────────────────────────────────────
+
+/**
+ * Load pipeline context from state directory.
+ * Returns empty object if file doesn't exist.
+ */
+export function loadPipelineContext(stateDir: string): PipelineContext {
+   const contextPath = join(stateDir, PIPELINE_CONTEXT_FILE);
+   if (!existsSync(contextPath)) {
+      return {};
+   }
+   try {
+      const content = readFileSync(contextPath, "utf-8");
+      return JSON.parse(content);
+   } catch (err) {
+      console.warn(`[hooks] Failed to load pipeline context: ${err}`);
+      return {};
+   }
+}
+
+/**
+ * Save pipeline context to state directory.
+ */
+export function savePipelineContext(stateDir: string, context: PipelineContext): void {
+   const contextPath = join(stateDir, PIPELINE_CONTEXT_FILE);
+   try {
+      writeFileSync(contextPath, JSON.stringify(context, null, 2));
+   } catch (err) {
+      console.warn(`[hooks] Failed to save pipeline context: ${err}`);
+   }
+}
+
+/**
+ * Parse pipeline context from hook stdout output.
+ * Looks for delimited block and extracts JSON.
+ * Returns null if no context block found or if JSON is invalid.
+ */
+export function parsePipelineContextFromOutput(output: string): PipelineContext | null {
+   const startIdx = output.indexOf(PIPELINE_CONTEXT_START);
+   if (startIdx === -1) return null;
+
+   const endIdx = output.indexOf(PIPELINE_CONTEXT_END, startIdx);
+   if (endIdx === -1) return null;
+
+   const contextStr = output.substring(startIdx + PIPELINE_CONTEXT_START.length, endIdx).trim();
+   if (!contextStr) return null;
+
+   try {
+      return JSON.parse(contextStr);
+   } catch (err) {
+      console.warn(`[hooks] Failed to parse pipeline context from hook output: ${err}`);
+      return null;
+   }
+}
+
+/**
+ * Merge pipeline context updates using shallow merge.
+ * Last-write-wins for duplicate keys.
+ */
+export function mergePipelineContext(
+   existing: PipelineContext,
+   updates: PipelineContext
+): PipelineContext {
+   return { ...existing, ...updates };
+}
+
+/**
+ * Format pipeline context for environment variable.
+ * Returns JSON string.
+ */
+export function formatPipelineContextForEnv(context: PipelineContext): string {
+   return JSON.stringify(context);
+}
+
+/**
+ * Filter pipeline context blocks from hook output.
+ * Returns output with context blocks removed.
+ */
+export function filterPipelineContextFromOutput(output: string): string {
+   const startIdx = output.indexOf(PIPELINE_CONTEXT_START);
+   if (startIdx === -1) return output;
+
+   const endIdx = output.indexOf(PIPELINE_CONTEXT_END, startIdx);
+   if (endIdx === -1) return output;
+
+   const before = output.substring(0, startIdx);
+   const after = output.substring(endIdx + PIPELINE_CONTEXT_END.length);
+   return before + after;
+}
 
 // ── Discovery ────────────────────────────────────────────────────────────────
 
@@ -207,13 +316,15 @@ export function sortHooks(hooks: HookEntry[]): HookEntry[] {
 /**
  * Execute all hooks for a given event.
  * Hooks run synchronously in priority order.
+ * Pipeline context flows through hooks and can be modified by each.
  * Failures are logged but do not abort the loop.
  */
-export function executeHooks(options: ExecuteHooksOptions): void {
-   if (options.disabled) return;
+export function executeHooks(options: ExecuteHooksOptions): PipelineContext {
+   if (options.disabled) return options.pipelineContext || {};
 
-   const { event, env, cwd } = options;
+   const { event, env, cwd, verbose } = options;
    const globalConfigDir = options.globalConfigDir ?? DEFAULT_GLOBAL_CONFIG_DIR;
+   let pipelineContext = options.pipelineContext || {};
 
    let hooks: HookEntry[];
    try {
@@ -221,20 +332,29 @@ export function executeHooks(options: ExecuteHooksOptions): void {
    } catch (err) {
       // Discovery error (collision) — log and continue, don't crash the loop
       console.error(`[hooks] Error discovering hooks for '${event}': ${err}`);
-      return;
+      return pipelineContext;
    }
 
-   if (hooks.length === 0) return;
+   if (hooks.length === 0) return pipelineContext;
 
    for (const hook of hooks) {
-      runHook(hook, env, cwd);
+      pipelineContext = runHook(hook, env, cwd, pipelineContext, verbose);
    }
+
+   return pipelineContext;
 }
 
 /**
  * Run a single hook script, prefixing output with hook name.
+ * Parses pipeline context from output and returns updated context.
  */
-function runHook(hook: HookEntry, env: HookEnv, cwd: string): void {
+function runHook(
+   hook: HookEntry,
+   env: HookEnv,
+   cwd: string,
+   pipelineContext: PipelineContext,
+   verbose?: boolean
+): PipelineContext {
    const prefix = `[hook:${hook.priority}-${hook.name}]`;
 
    // Build environment for the hook
@@ -246,6 +366,7 @@ function runHook(hook: HookEntry, env: HookEnv, cwd: string): void {
       RALPH_MODEL: env.RALPH_MODEL,
       RALPH_STATE_DIR: env.RALPH_STATE_DIR,
       RALPH_CWD: env.RALPH_CWD,
+      RALPH_PIPELINE_CONTEXT: formatPipelineContextForEnv(pipelineContext),
    };
 
    // Add optional event-specific vars
@@ -256,6 +377,10 @@ function runHook(hook: HookEntry, env: HookEnv, cwd: string): void {
    if (env.RALPH_END_REASON !== undefined) hookEnv.RALPH_END_REASON = env.RALPH_END_REASON;
    if (env.RALPH_ERROR_MESSAGE !== undefined) hookEnv.RALPH_ERROR_MESSAGE = env.RALPH_ERROR_MESSAGE;
 
+   if (verbose) {
+      console.log(`[pipeline] Before hook ${hook.name}: ${JSON.stringify(pipelineContext)}`);
+   }
+
    try {
       const result = spawnSync("bash", [hook.filePath], {
          cwd,
@@ -264,9 +389,17 @@ function runHook(hook: HookEntry, env: HookEnv, cwd: string): void {
          timeout: 30000, // 30s max per hook
       });
 
-      // Print stdout with prefix
+      // Parse pipeline context from stdout
+      let updatedContext = pipelineContext;
       if (result.stdout) {
-         for (const line of result.stdout.split("\n")) {
+         const parsedContext = parsePipelineContextFromOutput(result.stdout);
+         if (parsedContext !== null) {
+            updatedContext = mergePipelineContext(pipelineContext, parsedContext);
+         }
+
+         // Filter context blocks from output and print remaining lines
+         const filteredOutput = filterPipelineContextFromOutput(result.stdout);
+         for (const line of filteredOutput.split("\n")) {
             if (line.trim()) console.log(`${prefix} ${line}`);
          }
       }
@@ -287,8 +420,15 @@ function runHook(hook: HookEntry, env: HookEnv, cwd: string): void {
       if (result.signal) {
          console.warn(`${prefix} killed by signal ${result.signal}`);
       }
+
+      if (verbose) {
+         console.log(`[pipeline] After hook ${hook.name}: ${JSON.stringify(updatedContext)}`);
+      }
+
+      return updatedContext;
    } catch (err) {
       console.warn(`${prefix} failed to execute: ${err}`);
+      return pipelineContext;
    }
 }
 
@@ -341,4 +481,32 @@ export function formatHooksTable(hooksByEvent: Map<LifecycleEvent, HookEntry[]>)
    }
 
    return lines.join("\n");
+}
+
+// ── Pipeline CLI Helpers ─────────────────────────────────────────────────────
+
+/**
+ * Display pipeline context from state directory.
+ */
+export function showPipelineContext(stateDir: string): string {
+   const context = loadPipelineContext(stateDir);
+   if (Object.keys(context).length === 0) {
+      return "No pipeline context found";
+   }
+   return JSON.stringify(context, null, 2);
+}
+
+/**
+ * Clear pipeline context file.
+ */
+export function clearPipelineContext(stateDir: string): void {
+   const contextPath = join(stateDir, PIPELINE_CONTEXT_FILE);
+   if (existsSync(contextPath)) {
+      try {
+         const { unlinkSync } = require("fs");
+         unlinkSync(contextPath);
+      } catch (err) {
+         console.warn(`[hooks] Failed to clear pipeline context: ${err}`);
+      }
+   }
 }

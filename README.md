@@ -588,6 +588,54 @@ Hook stdout/stderr is printed to console with a prefix:
 
 Hook failures (non-zero exit) are logged as warnings but do NOT block the loop.
 
+#### Pipeline Context
+
+Hooks can pass data between each other and across iterations using pipeline context. This enables middleware-style data flow where each hook can read, transform, and forward context.
+
+**How it works:**
+
+1. Hooks receive current context via `RALPH_PIPELINE_CONTEXT` env var (JSON string)
+2. Hooks output updated context using delimiter pattern:
+   ```bash
+   echo "---RALPH_PIPELINE_CONTEXT---"
+   echo '{"key": "value", "count": 5}'
+   echo "---END_PIPELINE_CONTEXT---"
+   ```
+3. Context flows through hooks in priority order (each hook sees previous hooks' updates)
+4. Final context is saved to `.ralph/pipeline-context.json` after each iteration
+5. Context is loaded at loop start and persists across iterations
+
+**Example: Accumulating metrics**
+
+```bash
+#!/bin/bash
+# .ralph/hooks/iteration-end/20-accumulate-metrics.sh
+
+# Read current context
+CURRENT=$(echo "$RALPH_PIPELINE_CONTEXT" | jq -r '.totalIterations // 0')
+
+# Output updated context
+echo "---RALPH_PIPELINE_CONTEXT---"
+echo "{\"totalIterations\": $((CURRENT + 1)), \"lastAgent\": \"$RALPH_AGENT\"}"
+echo "---END_PIPELINE_CONTEXT---"
+```
+
+**CLI commands:**
+
+```bash
+# Show current pipeline context
+ralph pipeline show
+
+# Clear pipeline context
+ralph pipeline clear
+```
+
+**Notes:**
+- Context blocks are filtered from regular hook output (not printed to console)
+- Malformed JSON in context blocks is ignored with a warning
+- Context uses shallow merge (last-write-wins for duplicate keys)
+- Use `--verbose-hooks` to see context flow through hooks
+
 ## Troubleshooting
 
 ### Plugin errors
