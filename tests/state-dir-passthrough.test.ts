@@ -64,32 +64,6 @@ function cleanup() {
    }
 }
 
-/**
- * Clean stale state files at project-root `.ralph/` left by prior ralph runs
- * (manual invocations, other test suites). These tests assert that Ralph
- * does NOT pollute the default `.ralph/` when --state-dir is set, so a
- * pre-existing file there causes a false negative.
- */
-function cleanProjectRootDefaultState() {
-   const projectRoot = process.cwd();
-   const defaultStateDir = join(projectRoot, ".ralph");
-   for (const f of ["ralph-loop.state.json", "ralph-history.json"]) {
-      const p = join(defaultStateDir, f);
-      if (existsSync(p)) rmSync(p, { force: true });
-   }
-}
-
-/**
- * Clean the `tests/tmp/` custom-state dirs these tests create.
- * Without this, state accumulates across runs and can mask regressions.
- */
-function cleanTestsTmpState() {
-   const tmpBase = join(process.cwd(), "tests", "tmp");
-   if (existsSync(tmpBase)) {
-      rmSync(tmpBase, { recursive: true, force: true });
-   }
-}
-
 function writeFakeAgentConfig() {
    writeFileSync(
       agentConfigPath,
@@ -123,13 +97,10 @@ describe("BUG: --state-dir after -- (passthrough separator) is ignored", () => {
    beforeEach(() => {
       assignPaths(mkdtempSync(join(tmpdir(), "ralph-state-dir-passthrough-")));
       writeFakeAgentConfig();
-      cleanProjectRootDefaultState();
-      cleanTestsTmpState();
    });
 
    afterEach(() => {
       cleanup();
-      cleanTestsTmpState();
    });
 
    /**
@@ -142,8 +113,10 @@ describe("BUG: --state-dir after -- (passthrough separator) is ignored", () => {
     * EXPECTED: PASS — proves baseline --state-dir behavior
     */
    it("SMOKE: --state-dir BEFORE -- writes state to the custom directory", async () => {
-      const projectRoot = process.cwd();
-      const customStateDir = join(projectRoot, "tests", "tmp", "smoke-custom-state");
+      // Isolate cwd to workDir so the default `.ralph/` lives under workDir
+      // (cleaned by afterEach cleanup()). ralphPath is absolute, so bun can
+      // resolve it regardless of cwd — no need to run in project root.
+      const customStateDir = join(workDir, "smoke-custom-state");
 
       const proc = Bun.spawn({
          cmd: [
@@ -157,7 +130,7 @@ describe("BUG: --state-dir after -- (passthrough separator) is ignored", () => {
             "--agent", "opencode",
             "--model", TEST_MODEL,
          ],
-         cwd: projectRoot,
+         cwd: workDir,
          stdin: "ignore",
          stdout: "pipe",
          stderr: "pipe",
@@ -167,12 +140,13 @@ describe("BUG: --state-dir after -- (passthrough separator) is ignored", () => {
       const exitCode = await proc.exited;
       expect(exitCode).toBe(0);
 
-      // State files MUST be in the custom directory (not the default .ralph)
+      // State files MUST be in the custom directory
       expect(existsSync(join(customStateDir, "ralph-loop.state.json"))).toBe(true);
       expect(existsSync(join(customStateDir, "ralph-history.json"))).toBe(true);
 
-      // Ralph MUST NOT pollute the default .ralph directory
-      expect(existsSync(join(projectRoot, ".ralph", "ralph-loop.state.json"))).toBe(false);
+      // Ralph MUST NOT pollute the default .ralph directory (which is workDir/.ralph
+      // because cwd=workDir). This stays fully inside the temp workDir.
+      expect(existsSync(join(workDir, ".ralph", "ralph-loop.state.json"))).toBe(false);
    });
 
      /**
@@ -195,10 +169,8 @@ describe("BUG: --state-dir after -- (passthrough separator) is ignored", () => {
       * EXPECTED: PASS after fix (state goes to my-custom-state)
       */
      it("FAIL RED: --state-dir AFTER -- must still set Ralph's state directory", async () => {
-        // Use absolute paths resolved from project root (where Ralph.ts lives).
-        // Ralph is run from process.cwd() so it can resolve its own entry point.
-        const projectRoot = process.cwd();
-        const customStateDir = join(projectRoot, "tests", "tmp", "my-custom-state");
+        // Isolate cwd to workDir (see SMOKE test rationale).
+        const customStateDir = join(workDir, "my-custom-state");
 
         const proc = Bun.spawn({
            cmd: [
@@ -208,11 +180,11 @@ describe("BUG: --state-dir after -- (passthrough separator) is ignored", () => {
               "--max-iterations", "1",
               "do it",
               "--",
-              "--state-dir", customStateDir,   // ← BUG: after --
+              "--state-dir", customStateDir,   // after --
               "--agent", "opencode",
               "--model", TEST_MODEL,
            ],
-           cwd: projectRoot,   // must be project root so ralph.ts is findable
+           cwd: workDir,
            stdin: "ignore",
            stdout: "pipe",
            stderr: "pipe",
@@ -226,8 +198,8 @@ describe("BUG: --state-dir after -- (passthrough separator) is ignored", () => {
         expect(existsSync(join(customStateDir, "ralph-loop.state.json"))).toBe(true);
         expect(existsSync(join(customStateDir, "ralph-history.json"))).toBe(true);
 
-        // Ralph MUST NOT write to the default .ralph directory
-        expect(existsSync(join(projectRoot, ".ralph", "ralph-loop.state.json"))).toBe(false);
+        // Ralph MUST NOT write to the default .ralph directory (workDir/.ralph)
+        expect(existsSync(join(workDir, ".ralph", "ralph-loop.state.json"))).toBe(false);
      });
 
     /**
@@ -242,8 +214,7 @@ describe("BUG: --state-dir after -- (passthrough separator) is ignored", () => {
      *   ENV_OPENCODE_CONFIG_DIR=<value or __NOT_SET__>
      */
     it("UPSTREAM: sub-agent must NOT receive OPENCODE_CONFIG_DIR (upstream never sets it)", async () => {
-        const projectRoot = process.cwd();
-        const customStateDir = join(projectRoot, "tests", "tmp", "my-custom-state");
+        const customStateDir = join(workDir, "my-custom-state");
 
         const envInspectorPath = join(process.cwd(), "tests/helpers/fake-env-inspector.sh");
         const envConfigPath = join(workDir, "env-agents.json");
@@ -265,7 +236,7 @@ describe("BUG: --state-dir after -- (passthrough separator) is ignored", () => {
               "--agent", "opencode",
               "--model", TEST_MODEL,
            ],
-           cwd: projectRoot,
+           cwd: workDir,
            stdin: "ignore",
            stdout: "pipe",
            stderr: "pipe",
