@@ -144,3 +144,6 @@ tests/fixtures/goal-parser/
 .codeql-databases/
 package-lock.json
 goals/
+
+# ── Compiled binary (untracked; .js source stays tracked) ──
+bin/ralph
