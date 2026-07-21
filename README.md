@@ -820,7 +820,7 @@ ralph "Refactor the auth module" \
 ```
 
 **Notes:**
-- Ralph runs each Pi iteration with `pi -p --no-session`
+- Ralph runs each Pi iteration with `pi -p --no-session`; streaming mode adds `--mode json` for assistant output and tool summaries
 - The CLI binary is `pi`; override it with `RALPH_PI_BINARY`
 - Pi model patterns are passed through with `--model`
 - Pass Pi-specific flags after `--`, for example `-- --approve` to trust project-local resources

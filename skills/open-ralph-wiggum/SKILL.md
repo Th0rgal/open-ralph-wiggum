@@ -631,7 +631,7 @@ ralph "Refactor the auth module" \
 
 Notes:
 
-- Ralph runs each Pi iteration with `pi -p --no-session`
+- Ralph runs each Pi iteration with `pi -p --no-session`; streaming mode adds `--mode json` for assistant output and tool summaries
 - Binary is `pi`; override with `RALPH_PI_BINARY`
 - Pass Pi-specific flags after `--`, for example `-- --approve`
 - Pi has no built-in permission prompts, so `--allow-all` and `--no-allow-all` add no Pi flags

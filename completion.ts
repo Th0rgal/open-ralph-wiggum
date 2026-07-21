@@ -216,11 +216,54 @@ export function extractCursorAgentStreamDisplayLines(rawLine: string): string[] 
   return lines;
 }
 
+export function extractPiStreamDisplayLines(rawLine: string): string[] {
+  const cleanLine = stripAnsi(rawLine).trim();
+  if (!cleanLine.startsWith("{")) {
+    return [rawLine];
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(cleanLine);
+  } catch {
+    return [rawLine];
+  }
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const event = payload as Record<string, unknown>;
+  if (event.type !== "message_end" || !event.message || typeof event.message !== "object") {
+    return [];
+  }
+
+  const message = event.message as Record<string, unknown>;
+  if (message.role !== "assistant") {
+    return [];
+  }
+
+  const lines: string[] = [];
+  if (typeof message.content === "string") {
+    addNonEmptyTextLines(lines, message.content);
+  } else if (Array.isArray(message.content)) {
+    for (const block of message.content) {
+      if (!block || typeof block !== "object") continue;
+      const contentBlock = block as Record<string, unknown>;
+      if (contentBlock.type === "text") {
+        addNonEmptyTextLines(lines, contentBlock.text);
+      }
+    }
+  }
+  return lines;
+}
+
 export function extractAgentCompletionText(output: string, agentType: string): string {
   const extractStreamLines = agentType === "claude-code" || agentType === "qwen-code"
     ? extractClaudeStreamDisplayLines
     : agentType === "cursor-agent"
     ? extractCursorAgentStreamDisplayLines
+    : agentType === "pi"
+    ? extractPiStreamDisplayLines
     : null;
 
   if (!extractStreamLines) return output;

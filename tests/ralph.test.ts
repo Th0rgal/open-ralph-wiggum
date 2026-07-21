@@ -8,6 +8,7 @@ import {
   extractAgentCompletionText,
   extractClaudeStreamDisplayLines,
   extractCursorAgentStreamDisplayLines,
+  extractPiStreamDisplayLines,
   getLastNonEmptyLine,
   tasksMarkdownAllComplete,
 } from "../completion";
@@ -205,6 +206,24 @@ describe("agent stream output extraction", () => {
     expect(extractCursorAgentStreamDisplayLines(line)).toEqual(["ready", "<promise>COMPLETE</promise>"]);
   });
 
+  it("extracts Pi assistant text and ignores lifecycle events", () => {
+    const output = [
+      JSON.stringify({ type: "session", version: 3 }),
+      JSON.stringify({ type: "tool_execution_start", toolName: "edit" }),
+      JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done\n<promise>COMPLETE</promise>" }],
+        },
+      }),
+    ].join("\n");
+
+    expect(extractPiStreamDisplayLines(output.split("\n")[0])).toEqual([]);
+    expect(extractPiStreamDisplayLines(output.split("\n")[1])).toEqual([]);
+    expect(checkTerminalPromise(extractAgentCompletionText(output, "pi"), "COMPLETE")).toBe(true);
+  });
+
   it("leaves non-streaming agents unchanged for completion detection", () => {
     const output = "Finished\n<promise>COMPLETE</promise>";
     expect(extractAgentCompletionText(output, "opencode")).toBe(output);
@@ -252,12 +271,14 @@ describe("Pi agent invocation", () => {
     try {
       writeFileSync(fakePi, `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "${capturedArgs}"
+echo '{"type":"tool_execution_start","toolCallId":"call_1","toolName":"edit","args":{}}'
 cat > .ralph/ralph-tasks.md <<'TASKS'
 # Ralph Tasks
 
 - [x] Verify Pi task mode
 TASKS
-echo '<promise>COMPLETE</promise>'
+echo '{"type":"tool_execution_end","toolCallId":"call_1","toolName":"edit","result":{},"isError":false}'
+echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
 `);
       chmodSync(fakePi, 0o755);
       await Bun.$`mkdir -p ${join(workdir, ".ralph")}`;
@@ -274,7 +295,6 @@ echo '<promise>COMPLETE</promise>'
           "--tasks",
           "--no-commit",
           "--no-questions",
-          "--no-stream",
           "--no-allow-all",
           "--",
           "--approve",
@@ -295,15 +315,18 @@ echo '<promise>COMPLETE</promise>'
       expect(stderr).toBe("");
       expect(stdout).toContain("Iterative AI Development with Pi");
       expect(stdout).toContain("Completion promise detected");
+      expect(stdout).toContain("Tools:     edit 1");
       const piArgs = readFileSync(capturedArgs, "utf-8").split("\n");
-      expect(piArgs.slice(0, 5)).toEqual([
+      expect(piArgs.slice(0, 7)).toEqual([
         "-p",
         "--no-session",
+        "--mode",
+        "json",
         "--model",
         "google/gemini-2.5-pro",
         "--approve",
       ]);
-      const piPrompt = piArgs.slice(5).join("\n");
+      const piPrompt = piArgs.slice(7).join("\n");
       expect(piPrompt).toContain("Complete the task. Output <promise>COMPLETE</promise> when done.");
       expect(piPrompt).toContain("Verify Pi task mode");
       expect(readFileSync(join(workdir, ".ralph", "ralph-tasks.md"), "utf-8")).toContain(

@@ -15,6 +15,7 @@ import {
   extractAgentCompletionText,
   extractClaudeStreamDisplayLines,
   extractCursorAgentStreamDisplayLines,
+  extractPiStreamDisplayLines,
   stripAnsi,
   tasksMarkdownAllComplete,
 } from "./completion";
@@ -119,6 +120,17 @@ const PARSE_PATTERNS: Record<string, (line: string) => string | null> = {
     }
     return null;
   },
+  "pi": (line) => {
+    const cleanLine = stripAnsi(line).trim();
+    if (!cleanLine.startsWith("{")) return null;
+    try {
+      const payload = JSON.parse(cleanLine);
+      if (payload?.type === "tool_execution_start" && typeof payload.toolName === "string") {
+        return payload.toolName;
+      }
+    } catch {}
+    return null;
+  },
   "codex": null,
   "copilot": null,
   "default": (line) => {
@@ -185,6 +197,7 @@ const ARGS_TEMPLATES: Record<string, (prompt: string, model: string, options?: A
   },
   "pi": (prompt, model, options) => {
     const cmdArgs = ["-p", "--no-session"];
+    if (options?.streamOutput) cmdArgs.push("--mode", "json");
     if (model) cmdArgs.push("--model", model);
     if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
     cmdArgs.push(prompt);
@@ -259,7 +272,7 @@ function getDefaultConfig(): RalphConfig {
       { type: "copilot", command: "copilot", configName: "Copilot CLI", argsTemplate: "copilot", envTemplate: "default", parsePattern: "copilot" },
       { type: "cursor-agent", command: "cursor-agent", configName: "Cursor Agent", argsTemplate: "cursor-agent", envTemplate: "default", parsePattern: "cursor-agent" },
       { type: "qwen-code", command: "qwen", configName: "Qwen Code", argsTemplate: "qwen-code", envTemplate: "default", parsePattern: "qwen-code" },
-      { type: "pi", command: "pi", configName: "Pi", argsTemplate: "pi", envTemplate: "default", parsePattern: "default" },
+      { type: "pi", command: "pi", configName: "Pi", argsTemplate: "pi", envTemplate: "default", parsePattern: "pi" },
     ],
   };
 }
@@ -338,7 +351,7 @@ const BUILT_IN_AGENTS: Record<AgentType, AgentConfig> = {
     command: resolveCommand("pi", process.env.RALPH_PI_BINARY),
     buildArgs: ARGS_TEMPLATES["pi"],
     buildEnv: ENV_TEMPLATES["default"],
-    parseToolOutput: PARSE_PATTERNS["default"],
+    parseToolOutput: PARSE_PATTERNS["pi"],
     configName: "Pi",
   },
 };
@@ -2069,6 +2082,8 @@ async function streamProcessOutput(
       ? extractClaudeStreamDisplayLines(line)
       : options.agent.type === "cursor-agent"
       ? extractCursorAgentStreamDisplayLines(line)
+      : options.agent.type === "pi"
+      ? extractPiStreamDisplayLines(line)
       : [line];
     if (tool) {
       toolCounts.set(tool, (toolCounts.get(tool) ?? 0) + 1);
