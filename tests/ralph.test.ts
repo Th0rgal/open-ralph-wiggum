@@ -242,6 +242,67 @@ describe("agent stream output extraction", () => {
   });
 });
 
+describe("Pi agent invocation", () => {
+  it("runs Pi in one-shot ephemeral mode", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "ralph-pi-agent-test."));
+    const fakePi = join(workdir, "pi");
+    const capturedArgs = join(workdir, "pi-args.txt");
+    const rootDir = join(import.meta.dir, "..");
+
+    try {
+      writeFileSync(fakePi, `#!/usr/bin/env bash
+printf '%s\\n' "$@" > "${capturedArgs}"
+echo '<promise>COMPLETE</promise>'
+`);
+      chmodSync(fakePi, 0o755);
+
+      const proc = Bun.spawn({
+        cmd: [
+          "bun",
+          join(rootDir, "ralph.ts"),
+          "Complete the task. Output <promise>COMPLETE</promise> when done.",
+          "--agent", "pi",
+          "--model", "google/gemini-2.5-pro",
+          "--max-iterations", "1",
+          "--no-commit",
+          "--no-questions",
+          "--no-stream",
+          "--no-allow-all",
+          "--",
+          "--approve",
+        ],
+        cwd: workdir,
+        env: { ...process.env, RALPH_PI_BINARY: fakePi },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(stdout).toContain("Iterative AI Development with Pi");
+      expect(stdout).toContain("Completion promise detected");
+      const piArgs = readFileSync(capturedArgs, "utf-8").split("\n");
+      expect(piArgs.slice(0, 5)).toEqual([
+        "-p",
+        "--no-session",
+        "--model",
+        "google/gemini-2.5-pro",
+        "--approve",
+      ]);
+      expect(piArgs.slice(5).join("\n")).toContain(
+        "Complete the task. Output <promise>COMPLETE</promise> when done.",
+      );
+    } finally {
+      if (existsSync(workdir)) rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("activity timeout retry", () => {
   it("kills an inactive agent and starts the next iteration", async () => {

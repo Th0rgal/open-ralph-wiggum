@@ -4,7 +4,7 @@ description: >
   Use this skill whenever a user wants to run, install, configure, or understand open-ralph-wiggum (ralph).
   This skill can be used by any AI assistant or IDE agent (GitHub Copilot, Claude Code, Cursor, Windsurf, etc.).
   Triggers on: "ralph", "ralph wiggum", "agentic loop", "iterative AI loop", "autonomous coding loop",
-  "how to install ralph", "how to use ralph with Claude Code / Codex / Copilot / Cursor Agent / Qwen Code / OpenCode",
+  "how to install ralph", "how to use ralph with Claude Code / Codex / Copilot / Cursor Agent / Qwen Code / Pi / OpenCode",
   "ralph --agent", "ralph --tasks", "ralph --status", "--max-iterations", "--rotation",
   "how do I run ralph in VS Code / Cursor / JetBrains / Neovim",
   or any question about looping an AI coding agent until a task is done.
@@ -16,7 +16,7 @@ description: >
 
 **Open Ralph Wiggum** (`ralph`) wraps any supported AI coding agent in an autonomous loop: it sends the same prompt on every iteration, and the agent self-corrects by observing the state of the repo. The loop ends when the agent outputs a configurable completion promise (e.g. `<promise>COMPLETE</promise>`).
 
-Supported agents: **Claude Code**, **OpenAI Codex**, **GitHub Copilot CLI**, **Cursor Agent**, **Qwen Code**, **OpenCode** (default).
+Supported agents: **Claude Code**, **OpenAI Codex**, **GitHub Copilot CLI**, **Cursor Agent**, **Qwen Code**, **Pi**, **OpenCode** (default).
 
 ---
 
@@ -31,6 +31,7 @@ Supported agents: **Claude Code**, **OpenAI Codex**, **GitHub Copilot CLI**, **C
   - `copilot` — [GitHub Copilot CLI](https://github.com/github/copilot-cli)
   - `cursor-agent` — [Cursor Agent CLI](https://cursor.com/cli/)
   - `qwen` — [Qwen Code CLI](https://github.com/QwenLM/qwen-code)
+  - `pi` — [Pi](https://pi.dev)
   - `opencode` — [OpenCode](https://opencode.ai)
 
 ### npm (recommended)
@@ -117,6 +118,15 @@ ralph "Refactor the database layer. Output <promise>COMPLETE</promise> when done
 
 Requires Qwen Code installed via `npm install -g @qwen-code/qwen-code`.
 
+### Pi
+
+```bash
+ralph "Fix the failing tests. Output <promise>COMPLETE</promise> when done." \
+  --agent pi --max-iterations 15
+```
+
+Requires Pi installed via `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`.
+
 ---
 
 ## Checking Available Agents and Models
@@ -174,10 +184,18 @@ qwen --version
 npm install -g @qwen-code/qwen-code
 ```
 
+**Pi** — check version and install if needed:
+
+```bash
+pi --version
+# If not installed:
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+```
+
 ### Quick environment check (Linux/macOS)
 
 ```bash
-for bin in opencode claude codex copilot cursor-agent qwen; do
+for bin in opencode claude codex copilot cursor-agent qwen pi; do
   if command -v "$bin" &>/dev/null; then echo "✅ $bin: $(which $bin)"; else echo "❌ $bin: not found"; fi
 done && \
   [[ -n "$GH_TOKEN" ]] && echo "✅ GH_TOKEN set (Copilot CLI)" || echo "ℹ️  GH_TOKEN not set (needed only for Copilot CLI)"
@@ -195,6 +213,7 @@ done && \
 | Copilot CLI        | `--agent copilot`       | `copilot`      | `RALPH_COPILOT_BINARY`        |
 | Cursor Agent       | `--agent cursor-agent`  | `cursor-agent` | `RALPH_CURSOR_AGENT_BINARY`   |
 | Qwen Code          | `--agent qwen-code`     | `qwen`         | `RALPH_QWEN_CODE_BINARY`      |
+| Pi                 | `--agent pi`            | `pi`           | `RALPH_PI_BINARY`             |
 
 Use environment variables to point to a custom binary path if the CLI is not on `$PATH`.
 
@@ -203,7 +222,7 @@ Use environment variables to point to a custom binary path if the CLI is not on 
 ## Key Options
 
 ```
---agent AGENT            Agent to use (opencode|claude-code|codex|copilot|cursor-agent|qwen-code)
+--agent AGENT            Agent to use (opencode|claude-code|codex|copilot|cursor-agent|qwen-code|pi)
 --model MODEL            Model name (agent-specific, e.g. claude-sonnet-4, gpt-5-codex)
 --max-iterations N       Stop after N iterations (always set this as a safety net)
 --min-iterations N       Require at least N iterations before allowing completion (default: 1)
@@ -500,7 +519,7 @@ ralph "Refactor the auth module" \
   --max-iterations 15
 ```
 
-Valid agents are `opencode`, `claude-code`, `codex`, `copilot`, `cursor-agent`, and `qwen-code`.
+Valid agents are `opencode`, `claude-code`, `codex`, `copilot`, `cursor-agent`, `qwen-code`, and `pi`.
 
 Format: `agent:model` entries separated by commas. When `--rotation` is set, `--agent` and `--model` are ignored. The list cycles (iteration 3 of a 2-entry rotation goes back to entry 1).
 
@@ -591,6 +610,32 @@ Notes:
 - `--no-plugins` has no effect with Qwen Code
 - Headless mode uses `--output-format stream-json --include-partial-messages`
 - Binary is `qwen`; override with `RALPH_QWEN_CODE_BINARY`
+
+### Pi
+
+Install:
+
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+```
+
+Usage:
+
+```bash
+ralph "Fix the failing tests" \
+  --agent pi --max-iterations 10
+
+ralph "Refactor the auth module" \
+  --agent pi --model anthropic/claude-sonnet-4-5 --max-iterations 15
+```
+
+Notes:
+
+- Ralph runs each Pi iteration with `pi -p --no-session`
+- Binary is `pi`; override with `RALPH_PI_BINARY`
+- Pass Pi-specific flags after `--`, for example `-- --approve`
+- Pi has no built-in permission prompts, so `--allow-all` and `--no-allow-all` add no Pi flags
+- `--no-plugins` has no effect with Pi
 
 ### Cursor Agent
 

@@ -38,7 +38,7 @@ const questionsPath = join(stateDir, "ralph-questions.json");
 let customConfigPath = "";
 let initConfigPath = "";
 
-const AGENT_TYPES = ["opencode", "claude-code", "codex", "copilot", "cursor-agent", "qwen-code"] as const;
+const AGENT_TYPES = ["opencode", "claude-code", "codex", "copilot", "cursor-agent", "qwen-code", "pi"] as const;
 type AgentType = (typeof AGENT_TYPES)[number];
 
 type AgentEnvOptions = { filterPlugins?: boolean; allowAllPermissions?: boolean };
@@ -183,6 +183,13 @@ const ARGS_TEMPLATES: Record<string, (prompt: string, model: string, options?: A
     if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
     return cmdArgs;
   },
+  "pi": (prompt, model, options) => {
+    const cmdArgs = ["-p", "--no-session"];
+    if (model) cmdArgs.push("--model", model);
+    if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
+    cmdArgs.push(prompt);
+    return cmdArgs;
+  },
   "default": (prompt, model, options) => {
     const cmdArgs: string[] = [];
     if (model) cmdArgs.push("--model", model);
@@ -252,6 +259,7 @@ function getDefaultConfig(): RalphConfig {
       { type: "copilot", command: "copilot", configName: "Copilot CLI", argsTemplate: "copilot", envTemplate: "default", parsePattern: "copilot" },
       { type: "cursor-agent", command: "cursor-agent", configName: "Cursor Agent", argsTemplate: "cursor-agent", envTemplate: "default", parsePattern: "cursor-agent" },
       { type: "qwen-code", command: "qwen", configName: "Qwen Code", argsTemplate: "qwen-code", envTemplate: "default", parsePattern: "qwen-code" },
+      { type: "pi", command: "pi", configName: "Pi", argsTemplate: "pi", envTemplate: "default", parsePattern: "default" },
     ],
   };
 }
@@ -325,6 +333,14 @@ const BUILT_IN_AGENTS: Record<AgentType, AgentConfig> = {
     parseToolOutput: PARSE_PATTERNS["qwen-code"],
     configName: "Qwen Code",
   },
+  pi: {
+    type: "pi",
+    command: resolveCommand("pi", process.env.RALPH_PI_BINARY),
+    buildArgs: ARGS_TEMPLATES["pi"],
+    buildEnv: ENV_TEMPLATES["default"],
+    parseToolOutput: PARSE_PATTERNS["default"],
+    configName: "Pi",
+  },
 };
 
 // Parse arguments early for --config and --init-config handling
@@ -376,7 +392,7 @@ Arguments:
   prompt              Task description for the AI to work on
 
 Options:
-  --agent AGENT       AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent, qwen-code
+  --agent AGENT       AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent, qwen-code, pi
   --codex-goal       Run Codex iterations in goal mode; final Codex/OMX prompt starts with /goal
   --codex-backend BACKEND  Backend for --codex-goal: codex or omx (default: detect; env RALPH_CODEX_BACKEND)
   --codex-goal-native  Force a native /goal attempt even when backend support is unconfirmed
@@ -390,7 +406,7 @@ Options:
   --model MODEL       Model to use (agent-specific, e.g., anthropic/claude-sonnet)
   --rotation LIST     Agent/model rotation for each iteration (comma-separated)
                       Each entry must be "agent:model" format
-                      Valid agents: opencode, claude-code, codex, copilot, cursor-agent, qwen-code
+                      Valid agents: opencode, claude-code, codex, copilot, cursor-agent, qwen-code, pi
                       Example: --rotation "opencode:claude-sonnet-4,claude-code:gpt-4o"
                       When used, --agent and --model are ignored
   --prompt-file, --file, -f  Read prompt content from a file
@@ -2337,6 +2353,9 @@ async function runRalphLoop(): Promise<void> {
   }
   if (disablePlugins && agentConfig.type === "qwen-code") {
     console.warn("Warning: --no-plugins has no effect with Qwen Code agent");
+  }
+  if (disablePlugins && agentConfig.type === "pi") {
+    console.warn("Warning: --no-plugins has no effect with Pi agent");
   }
 
   console.log(`
