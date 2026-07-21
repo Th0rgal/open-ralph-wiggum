@@ -2687,10 +2687,12 @@ async function runRalphLoop(): Promise<void> {
 
       // For agents using stream-json, extract display text before checking completion
       const completionCheckText = extractAgentCompletionText(result, agentConfig.type);
+      // Pi JSON includes user and tool events, so only extracted assistant text may signal a promise.
+      const rawPromiseOutput = agentConfig.type === "pi" ? undefined : result;
 
-      const completionSignalDetected = checkCompletion(completionCheckText, completionPromise, result);
-      const abortDetected = abortPromise ? checkCompletion(completionCheckText, abortPromise, result) : false;
-      let taskCompletionDetected = tasksMode ? checkCompletion(completionCheckText, taskPromise, result) : false;
+      const completionSignalDetected = checkCompletion(completionCheckText, completionPromise, rawPromiseOutput);
+      const abortDetected = abortPromise ? checkCompletion(completionCheckText, abortPromise, rawPromiseOutput) : false;
+      let taskCompletionDetected = tasksMode ? checkCompletion(completionCheckText, taskPromise, rawPromiseOutput) : false;
       const taskGateCompletion = taskCompletionDetected ? { satisfied: false } : taskCompletionSatisfiedByTaskGate(state);
       if (taskGateCompletion.satisfied) {
         taskCompletionDetected = true;

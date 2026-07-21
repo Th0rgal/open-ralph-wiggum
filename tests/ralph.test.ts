@@ -338,6 +338,62 @@ echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"te
   });
 });
 
+it("ignores promise text from Pi user events until the assistant emits it", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "ralph-pi-completion-test."));
+  const fakePi = join(workdir, "pi");
+  const countFile = join(workdir, "pi-count.txt");
+  const rootDir = join(import.meta.dir, "..");
+
+  try {
+    writeFileSync(fakePi, `#!/usr/bin/env bash
+count=0
+if [ -f "${countFile}" ]; then count=$(cat "${countFile}"); fi
+count=$((count + 1))
+printf '%s' "$count" > "${countFile}"
+echo '{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
+if [ "$count" -eq 1 ]; then
+  echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"One backlog item completed; continue."}]}}'
+else
+  echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
+fi
+`);
+    chmodSync(fakePi, 0o755);
+
+    const proc = Bun.spawn({
+      cmd: [
+        "bun",
+        join(rootDir, "ralph.ts"),
+        "Process the backlog.",
+        "--agent", "pi",
+        "--max-iterations", "2",
+        "--no-commit",
+        "--no-questions",
+        "--no-allow-all",
+      ],
+      cwd: workdir,
+      env: { ...process.env, RALPH_PI_BINARY: fakePi },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    expect(readFileSync(countFile, "utf-8")).toBe("2");
+    expect(stdout).toContain("One backlog item completed; continue.");
+    expect(stdout).toContain("Completion promise: not detected");
+    expect(stdout).toContain("Iteration 2 / 2");
+    expect(stdout).toContain("Completion promise detected");
+  } finally {
+    if (existsSync(workdir)) rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 describe("activity timeout retry", () => {
   it("kills an inactive agent and starts the next iteration", async () => {
     const workdir = mkdtempSync(join(tmpdir(), "ralph-activity-timeout-test."));
