@@ -252,9 +252,16 @@ describe("Pi agent invocation", () => {
     try {
       writeFileSync(fakePi, `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "${capturedArgs}"
+cat > .ralph/ralph-tasks.md <<'TASKS'
+# Ralph Tasks
+
+- [x] Verify Pi task mode
+TASKS
 echo '<promise>COMPLETE</promise>'
 `);
       chmodSync(fakePi, 0o755);
+      await Bun.$`mkdir -p ${join(workdir, ".ralph")}`;
+      writeFileSync(join(workdir, ".ralph", "ralph-tasks.md"), "# Ralph Tasks\n\n- [ ] Verify Pi task mode\n");
 
       const proc = Bun.spawn({
         cmd: [
@@ -264,6 +271,7 @@ echo '<promise>COMPLETE</promise>'
           "--agent", "pi",
           "--model", "google/gemini-2.5-pro",
           "--max-iterations", "1",
+          "--tasks",
           "--no-commit",
           "--no-questions",
           "--no-stream",
@@ -295,8 +303,11 @@ echo '<promise>COMPLETE</promise>'
         "google/gemini-2.5-pro",
         "--approve",
       ]);
-      expect(piArgs.slice(5).join("\n")).toContain(
-        "Complete the task. Output <promise>COMPLETE</promise> when done.",
+      const piPrompt = piArgs.slice(5).join("\n");
+      expect(piPrompt).toContain("Complete the task. Output <promise>COMPLETE</promise> when done.");
+      expect(piPrompt).toContain("Verify Pi task mode");
+      expect(readFileSync(join(workdir, ".ralph", "ralph-tasks.md"), "utf-8")).toContain(
+        "- [x] Verify Pi task mode",
       );
     } finally {
       if (existsSync(workdir)) rmSync(workdir, { recursive: true, force: true });
