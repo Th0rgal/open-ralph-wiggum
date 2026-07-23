@@ -5,6 +5,7 @@ import { join } from "path";
 import {
   checkTerminalPromise,
   containsPromiseTag,
+  createPiStreamReducer,
   extractAgentCompletionText,
   extractClaudeStreamDisplayLines,
   extractCursorAgentStreamDisplayLines,
@@ -224,6 +225,147 @@ describe("agent stream output extraction", () => {
     expect(checkTerminalPromise(extractAgentCompletionText(output, "pi"), "COMPLETE")).toBe(true);
   });
 
+  it("reduces cumulative Pi events without retaining their raw payloads", () => {
+    const reducer = createPiStreamReducer();
+    const repeatedPayload = "x".repeat(32 * 1024);
+
+    for (let index = 0; index < 128; index++) {
+      reducer.pushLine(JSON.stringify({
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: `${index}:${repeatedPayload}` }],
+        },
+      }), false);
+    }
+
+    const toolEffect = reducer.pushLine(JSON.stringify({
+      type: "tool_execution_start",
+      toolCallId: "call_1",
+      toolName: "edit",
+      args: {},
+    }), false);
+    reducer.pushLine(JSON.stringify({
+      type: "tool_execution_end",
+      toolCallId: "call_1",
+      toolName: "edit",
+      result: { content: [{ type: "text", text: repeatedPayload }] },
+      isError: false,
+    }), false);
+    reducer.pushLine(JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "<promise>COMPLETE</promise>" }],
+      },
+    }), false);
+    reducer.pushLine(JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "done\n<promise>COMPLETE</promise>" }],
+      },
+    }), false);
+
+    const summary = reducer.finish();
+    expect(toolEffect.toolName).toBe("edit");
+    expect(summary.completionText).toBe("done\n<promise>COMPLETE</promise>");
+    expect(summary.completionText.length + summary.diagnosticText.length).toBeLessThan(1024);
+  });
+
+  it("ignores every promise from non-assistant Pi events", () => {
+    const reducer = createPiStreamReducer();
+    const falsePromises = [
+      "<promise>COMPLETE</promise>",
+      "<promise>ABORT</promise>",
+      "<promise>READY_FOR_NEXT_TASK</promise>",
+    ].join("\n");
+
+    for (const event of [
+      { type: "message_update", message: { role: "assistant", content: falsePromises } },
+      { type: "tool_execution_end", result: { content: falsePromises }, isError: false },
+      { type: "message_end", message: { role: "user", content: falsePromises } },
+      { type: "message_end", message: { role: "toolResult", content: falsePromises } },
+      { type: "agent_end", messages: [{ role: "assistant", content: falsePromises }] },
+    ]) {
+      reducer.pushLine(JSON.stringify(event), false);
+    }
+    reducer.pushLine(
+      `{"type":"message_end","message":{"role":"user","content":${JSON.stringify(falsePromises)}`,
+      false,
+    );
+
+    expect(reducer.finish().completionText).toBe("");
+  });
+
+  it("discards irrelevant Pi events without parsing their payloads", () => {
+    const reducer = createPiStreamReducer();
+    const effect = reducer.pushLine(
+      `{"type":"message_update","message":"${"x".repeat(128 * 1024)}`,
+      false,
+    );
+
+    expect(effect.displayLines).toEqual([]);
+    expect(reducer.finish().completionText).toBe("");
+  });
+
+  it("retains Pi stdout errors for bounded diagnostics", () => {
+    const reducer = createPiStreamReducer();
+
+    reducer.pushLine(JSON.stringify({
+      type: "error",
+      error: { message: "ProviderModelNotFoundError: missing model" },
+    }), false);
+    reducer.pushLine(JSON.stringify({
+      type: "tool_execution_end",
+      toolCallId: "call_failed",
+      toolName: "bash",
+      isError: true,
+      result: { content: [{ type: "text", text: "error: command failed" }] },
+    }), false);
+
+    const summary = reducer.finish();
+    expect(summary.diagnosticText).toContain("ProviderModelNotFoundError: missing model");
+    expect(summary.diagnosticText).toContain("error: command failed");
+  });
+
+  it("bounds Pi diagnostics and retains the question signal", () => {
+    const reducer = createPiStreamReducer();
+    const diagnosticTail = ":diagnostic-tail";
+
+    reducer.pushLine(`error:${"x".repeat(128 * 1024)}${diagnosticTail}`, true);
+    reducer.pushLine(JSON.stringify({
+      type: "tool_execution_start",
+      toolCallId: "call_question",
+      toolName: "question",
+      args: { question: "Should I continue?" },
+    }), false);
+
+    const summary = reducer.finish();
+    expect(summary.diagnosticText.length).toBe(64 * 1024);
+    expect(summary.diagnosticText).toEndWith(diagnosticTail);
+    expect(summary.question).toBe("Should I continue?");
+  });
+
+  it("keeps only a bounded tail of the final Pi assistant text", () => {
+    const reducer = createPiStreamReducer();
+    reducer.pushLine(JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{
+          type: "text",
+          text: `${"女".repeat(128 * 1024)}\n<promise>COMPLETE</promise>`,
+        }],
+      },
+    }), false);
+
+    const summary = reducer.finish();
+    expect(new TextEncoder().encode(summary.completionText).byteLength).toBeLessThanOrEqual(64 * 1024);
+    expect(summary.completionText).not.toContain("\uFFFD");
+    expect(checkTerminalPromise(summary.completionText, "COMPLETE")).toBe(true);
+  });
+
   it("leaves non-streaming agents unchanged for completion detection", () => {
     const output = "Finished\n<promise>COMPLETE</promise>";
     expect(extractAgentCompletionText(output, "opencode")).toBe(output);
@@ -332,6 +474,49 @@ echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"te
       expect(readFileSync(join(workdir, ".ralph", "ralph-tasks.md"), "utf-8")).toContain(
         "- [x] Verify Pi task mode",
       );
+    } finally {
+      if (existsSync(workdir)) rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it("detects model errors from Pi stdout events", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "ralph-pi-model-error-test."));
+    const fakePi = join(workdir, "pi");
+    const rootDir = join(import.meta.dir, "..");
+
+    try {
+      writeFileSync(fakePi, `#!/usr/bin/env bash
+echo '{"type":"error","error":{"message":"ProviderModelNotFoundError: missing model"}}'
+exit 1
+`);
+      chmodSync(fakePi, 0o755);
+
+      const proc = Bun.spawn({
+        cmd: [
+          "bun",
+          join(rootDir, "ralph.ts"),
+          "Run the task.",
+          "--agent", "pi",
+          "--max-iterations", "1",
+          "--no-commit",
+          "--no-questions",
+          "--no-allow-all",
+        ],
+        cwd: workdir,
+        env: { ...process.env, RALPH_PI_BINARY: fakePi },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      const [, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("Model configuration error detected");
+      expect(stderr).toContain("could not find a valid model");
     } finally {
       if (existsSync(workdir)) rmSync(workdir, { recursive: true, force: true });
     }

@@ -12,10 +12,10 @@ import { join } from "path";
 import {
   checkTerminalPromise,
   containsPromiseTag,
+  createPiStreamReducer,
   extractAgentCompletionText,
   extractClaudeStreamDisplayLines,
   extractCursorAgentStreamDisplayLines,
-  extractPiStreamDisplayLines,
   stripAnsi,
   tasksMarkdownAllComplete,
 } from "./completion";
@@ -2049,7 +2049,12 @@ async function streamProcessOutput(
     lastActivityTimeoutMs?: number;
     onActivityTimeout?: () => void;
   },
-): Promise<{ stdoutText: string; stderrText: string; toolCounts: Map<string, number> }> {
+): Promise<{
+  stdoutText: string;
+  stderrText: string;
+  question: string | null;
+  toolCounts: Map<string, number>;
+}> {
   const toolCounts = new Map<string, number>();
   let stdoutText = "";
   let stderrText = "";
@@ -2060,6 +2065,7 @@ async function streamProcessOutput(
 
   const compactTools = options.compactTools;
   const parseToolOutput = options.agent.parseToolOutput;
+  const piReducer = options.agent.type === "pi" ? createPiStreamReducer() : null;
 
   const maybePrintToolSummary = (force = false) => {
     if (!compactTools || toolCounts.size === 0) return;
@@ -2077,14 +2083,15 @@ async function streamProcessOutput(
 
   const handleLine = (line: string, isError: boolean) => {
     lastActivityAt = Date.now();
-    const tool = parseToolOutput(line);
-    const outputLines = options.agent.type === "claude-code" || options.agent.type === "qwen-code"
-      ? extractClaudeStreamDisplayLines(line)
-      : options.agent.type === "cursor-agent"
-      ? extractCursorAgentStreamDisplayLines(line)
-      : options.agent.type === "pi"
-      ? extractPiStreamDisplayLines(line)
-      : [line];
+    const piEffect = piReducer?.pushLine(line, isError);
+    const tool = piEffect ? piEffect.toolName : parseToolOutput(line);
+    const outputLines = piEffect?.displayLines ?? (
+      options.agent.type === "claude-code" || options.agent.type === "qwen-code"
+        ? extractClaudeStreamDisplayLines(line)
+        : options.agent.type === "cursor-agent"
+        ? extractCursorAgentStreamDisplayLines(line)
+        : [line]
+    );
     if (tool) {
       toolCounts.set(tool, (toolCounts.get(tool) ?? 0) + 1);
       if (compactTools && outputLines.length === 0) {
@@ -2187,14 +2194,14 @@ async function streamProcessOutput(
       streamText(
         proc.stdout,
         chunk => {
-          stdoutText += chunk;
+          if (!piReducer) stdoutText += chunk;
         },
         false,
       ),
       streamText(
         proc.stderr,
         chunk => {
-          stderrText += chunk;
+          if (!piReducer) stderrText += chunk;
         },
         true,
       ),
@@ -2207,7 +2214,18 @@ async function streamProcessOutput(
     maybePrintToolSummary(true);
   }
 
-  return { stdoutText, stderrText, toolCounts };
+  const piSummary = piReducer?.finish();
+  if (piSummary) {
+    stdoutText = piSummary.completionText;
+    stderrText = piSummary.diagnosticText;
+  }
+
+  return {
+    stdoutText,
+    stderrText,
+    question: piSummary?.question ?? null,
+    toolCounts,
+  };
 }
 // Main loop
 // Helper to detect per-iteration file changes using content hashes
@@ -2622,6 +2640,7 @@ async function runRalphLoop(): Promise<void> {
       const exitCodePromise = proc.exited;
       let result = "";
       let stderr = "";
+      let streamedQuestion: string | null = null;
       let toolCounts = new Map<string, number>();
 
       if (streamOutput) {
@@ -2649,6 +2668,7 @@ async function runRalphLoop(): Promise<void> {
         currentAbortController = null; // Clear after streaming completes
         result = streamed.stdoutText;
         stderr = streamed.stderrText;
+        streamedQuestion = streamed.question;
         toolCounts = streamed.toolCounts;
       } else {
         const stdoutPromise = new Response(proc.stdout).text();
@@ -2685,8 +2705,10 @@ async function runRalphLoop(): Promise<void> {
         });
       }
 
-      // For agents using stream-json, extract display text before checking completion
-      const completionCheckText = extractAgentCompletionText(result, agentConfig.type);
+      // Pi streaming has already reduced JSON events to assistant text; buffered Pi output is plain text.
+      const completionCheckText = agentConfig.type === "pi"
+        ? result
+        : extractAgentCompletionText(result, agentConfig.type);
       // Pi JSON includes user and tool events, so only extracted assistant text may signal a promise.
       const rawPromiseOutput = agentConfig.type === "pi" ? undefined : result;
 
@@ -2851,7 +2873,7 @@ async function runRalphLoop(): Promise<void> {
 
       // Check for question tool invocation and prompt user if needed
       if (handleQuestions) {
-        const detectedQuestion = detectQuestionTool(combinedOutput, agentConfig);
+        const detectedQuestion = streamedQuestion ?? detectQuestionTool(combinedOutput, agentConfig);
         if (detectedQuestion) {
           console.log(`\n🤔 Agent asked a question. Pausing to get your answer...`);
           const answer = await promptUser(detectedQuestion);

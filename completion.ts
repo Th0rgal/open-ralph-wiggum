@@ -216,45 +216,185 @@ export function extractCursorAgentStreamDisplayLines(rawLine: string): string[] 
   return lines;
 }
 
-export function extractPiStreamDisplayLines(rawLine: string): string[] {
-  const cleanLine = stripAnsi(rawLine).trim();
+const PI_STREAM_RETAINED_TEXT_LIMIT_BYTES = 64 * 1024;
+const UTF8_ENCODER = new TextEncoder();
+const UTF8_DECODER = new TextDecoder();
+
+interface PiStreamLineEffect {
+  displayLines: string[];
+  toolName: string | null;
+  question: string | null;
+  diagnosticText: string | null;
+}
+
+function extractPiQuestion(args: unknown): string | null {
+  if (!args || typeof args !== "object") return null;
+  const record = args as Record<string, unknown>;
+  for (const key of ["question", "prompt", "message", "text"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim().substring(0, 200);
+  }
+  if (Array.isArray(record.questions)) {
+    const first = record.questions[0];
+    if (first && typeof first === "object") {
+      const value = (first as Record<string, unknown>).question;
+      if (typeof value === "string" && value.trim()) return value.trim().substring(0, 200);
+    }
+  }
+  return null;
+}
+
+function extractPiDiagnostic(value: unknown, depth = 0): string | null {
+  if (depth > 3) return null;
+  if (typeof value === "string") return value.trim() || null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const diagnostic = extractPiDiagnostic(item, depth + 1);
+      if (diagnostic) return diagnostic;
+    }
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+
+  const record = value as Record<string, unknown>;
+  for (const key of ["message", "errorMessage", "text", "content", "error", "result"]) {
+    const diagnostic = extractPiDiagnostic(record[key], depth + 1);
+    if (diagnostic) return diagnostic;
+  }
+  return null;
+}
+
+function parsePiStreamLine(rawLine: string): PiStreamLineEffect {
+  const emptyEffect = {
+    displayLines: [],
+    toolName: null,
+    question: null,
+    diagnosticText: null,
+  } satisfies PiStreamLineEffect;
+  const cleanLine = rawLine.includes("\x1B[") ? stripAnsi(rawLine).trim() : rawLine.trim();
   if (!cleanLine.startsWith("{")) {
-    return [rawLine];
+    return { ...emptyEffect, displayLines: [rawLine] };
+  }
+
+  // Cumulative Pi events can dwarf useful output, so parse only event types with retained semantics.
+  const typeMatch = cleanLine.match(/^\{\s*"type"\s*:\s*"([^"]+)"/);
+  const eventType = typeMatch?.[1];
+  const failedToolEvent = eventType === "tool_execution_end" &&
+    /"isError"\s*:\s*true(?:\s*[,}])/.test(cleanLine);
+  if (
+    eventType &&
+    eventType !== "message_end" &&
+    eventType !== "tool_execution_start" &&
+    eventType !== "error" &&
+    !failedToolEvent
+  ) {
+    return emptyEffect;
   }
 
   let payload: unknown;
   try {
     payload = JSON.parse(cleanLine);
   } catch {
-    return [rawLine];
+    return eventType
+      ? { ...emptyEffect, diagnosticText: rawLine }
+      : { ...emptyEffect, displayLines: [rawLine] };
   }
-  if (!payload || typeof payload !== "object") {
-    return [];
-  }
+  if (!payload || typeof payload !== "object") return emptyEffect;
 
   const event = payload as Record<string, unknown>;
+  const toolName = event.type === "tool_execution_start" && typeof event.toolName === "string"
+    ? event.toolName
+    : null;
+  const question = toolName?.toLowerCase() === "question"
+    ? extractPiQuestion(event.args) ?? "question detected"
+    : null;
+  const diagnosticText = event.type === "error"
+    ? extractPiDiagnostic(event.error) ?? rawLine
+    : event.type === "tool_execution_end" && event.isError === true
+    ? extractPiDiagnostic(event.result) ?? rawLine
+    : null;
   if (event.type !== "message_end" || !event.message || typeof event.message !== "object") {
-    return [];
+    return { displayLines: [], toolName, question, diagnosticText };
   }
 
   const message = event.message as Record<string, unknown>;
   if (message.role !== "assistant") {
-    return [];
+    return { displayLines: [], toolName, question, diagnosticText };
   }
 
-  const lines: string[] = [];
+  const displayLines: string[] = [];
   if (typeof message.content === "string") {
-    addNonEmptyTextLines(lines, message.content);
+    addNonEmptyTextLines(displayLines, message.content);
   } else if (Array.isArray(message.content)) {
     for (const block of message.content) {
       if (!block || typeof block !== "object") continue;
       const contentBlock = block as Record<string, unknown>;
       if (contentBlock.type === "text") {
-        addNonEmptyTextLines(lines, contentBlock.text);
+        addNonEmptyTextLines(displayLines, contentBlock.text);
       }
     }
   }
-  return lines;
+  return {
+    displayLines,
+    toolName,
+    question,
+    diagnosticText: diagnosticText ?? extractPiDiagnostic(message.errorMessage),
+  };
+}
+
+function appendRetainedText(current: string, text: string): string {
+  const combined = current ? `${current}\n${text}` : text;
+  let candidateStart = Math.max(0, combined.length - PI_STREAM_RETAINED_TEXT_LIMIT_BYTES);
+  if (
+    candidateStart > 0 &&
+    combined.charCodeAt(candidateStart) >= 0xDC00 &&
+    combined.charCodeAt(candidateStart) <= 0xDFFF &&
+    combined.charCodeAt(candidateStart - 1) >= 0xD800 &&
+    combined.charCodeAt(candidateStart - 1) <= 0xDBFF
+  ) {
+    candidateStart--;
+  }
+
+  const candidate = combined.slice(candidateStart);
+  const bytes = UTF8_ENCODER.encode(candidate);
+  if (bytes.byteLength <= PI_STREAM_RETAINED_TEXT_LIMIT_BYTES) return candidate;
+
+  let byteStart = bytes.byteLength - PI_STREAM_RETAINED_TEXT_LIMIT_BYTES;
+  while (byteStart < bytes.byteLength && (bytes[byteStart] & 0xC0) === 0x80) byteStart++;
+  return UTF8_DECODER.decode(bytes.subarray(byteStart));
+}
+
+export function extractPiStreamDisplayLines(rawLine: string): string[] {
+  return parsePiStreamLine(rawLine).displayLines;
+}
+
+export function createPiStreamReducer() {
+  let completionText = "";
+  let diagnosticText = "";
+  let question: string | null = null;
+
+  return {
+    pushLine(rawLine: string, isError: boolean) {
+      const effect = parsePiStreamLine(rawLine);
+      if (isError) {
+        diagnosticText = appendRetainedText(diagnosticText, rawLine);
+      } else {
+        if (effect.diagnosticText) {
+          diagnosticText = appendRetainedText(diagnosticText, effect.diagnosticText);
+        }
+        if (effect.displayLines.length > 0) {
+          completionText = appendRetainedText("", effect.displayLines.join("\n"));
+        }
+      }
+      if (!question && effect.question) {
+        question = effect.question;
+      }
+      return effect;
+    },
+    finish() {
+      return { completionText, diagnosticText, question };
+    },
+  };
 }
 
 export function extractAgentCompletionText(output: string, agentType: string): string {
