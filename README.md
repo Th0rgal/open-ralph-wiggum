@@ -110,7 +110,7 @@ Switch between AI coding agents without changing your workflow:
 - **Autonomous Execution** — Set it running and come back to finished code
 - **Task Tracking** — Built-in task management with `--tasks` mode
 - **Live Monitoring** — Check progress with `--status` from another terminal
-- **Mid-Loop Hints** — Inject guidance with `--add-context` without stopping
+- **Mid-Loop Guidance** — Use `--add-context` for the next iteration or steer the active Pi turn with `--steer`
 
 ## Why Use an Agentic Loop?
 
@@ -400,6 +400,9 @@ ralph --status
 # Add context/hints for the next iteration
 ralph --add-context "Focus on fixing the auth module first"
 
+# Steer the current Pi iteration at its next safe turn boundary
+ralph --steer "Inspect the failing test before continuing"
+
 # Clear pending context
 ralph --clear-context
 ```
@@ -448,6 +451,20 @@ ralph --add-context "Try using the singleton pattern for config"
 ```
 
 Context is automatically consumed after one iteration.
+
+### Steering the Current Pi Iteration
+
+When the active iteration uses Pi, steer that same run from another terminal in the same project directory:
+
+```bash
+ralph --steer "Stop the broad refactor and inspect the failing parser test"
+```
+
+Pi consumes the message after the current assistant turn finishes its tool calls and before the next model call. The command waits until that safe turn boundary is reached. It does not interrupt a running tool.
+
+`--steer` fails without changing context when the active agent is not Pi, the iteration has ended, no loop is active, or multiple loops are active in the same workspace. It never falls back to `--add-context`. Closing the controller before it reports success does not retract a message Pi has already accepted.
+
+Use `--add-context` when guidance should apply to the next iteration. Ralph's control layer does not write steering text to state, history, or context files. Pi extensions and model providers may have their own external logging. Pi steering requires a Pi release with RPC mode and `agent_settled` support.
 
 ## Troubleshooting
 

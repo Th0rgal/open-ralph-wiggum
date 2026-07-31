@@ -404,23 +404,34 @@ describe("agent stream output extraction", () => {
 });
 
 describe("Pi agent invocation", () => {
-  it("runs Pi in one-shot ephemeral mode", async () => {
+  it("runs Pi in fresh RPC mode", async () => {
     const workdir = mkdtempSync(join(tmpdir(), "ralph-pi-agent-test."));
     const fakePi = join(workdir, "pi");
     const capturedArgs = join(workdir, "pi-args.txt");
+    const capturedCommands = join(workdir, "pi-commands.jsonl");
     const rootDir = join(import.meta.dir, "..");
 
     try {
       writeFileSync(fakePi, `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "${capturedArgs}"
-echo '{"type":"tool_execution_start","toolCallId":"call_1","toolName":"edit","args":{}}'
-cat > .ralph/ralph-tasks.md <<'TASKS'
+while IFS= read -r command; do
+  printf '%s\\n' "$command" >> "${capturedCommands}"
+  if [[ "$command" == *'"type":"prompt"'* ]]; then
+    id=$(printf '%s' "$command" | sed -n 's/.*"id":"\\([^"]*\\)".*/\\1/p')
+    printf '{"type":"response","id":"%s","command":"prompt","success":true}\\n' "$id"
+    echo '{"type":"agent_start"}'
+    echo '{"type":"tool_execution_start","toolCallId":"call_1","toolName":"edit","args":{}}'
+    cat > .ralph/ralph-tasks.md <<'TASKS'
 # Ralph Tasks
 
 - [x] Verify Pi task mode
 TASKS
-echo '{"type":"tool_execution_end","toolCallId":"call_1","toolName":"edit","result":{},"isError":false}'
-echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
+    echo '{"type":"tool_execution_end","toolCallId":"call_1","toolName":"edit","result":{},"isError":false}'
+    echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
+    echo '{"type":"agent_end","messages":[],"willRetry":false}'
+    echo '{"type":"agent_settled"}'
+  fi
+done
 `);
       chmodSync(fakePi, 0o755);
       await Bun.$`mkdir -p ${join(workdir, ".ralph")}`;
@@ -458,19 +469,22 @@ echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"te
       expect(stdout).toContain("Iterative AI Development with Pi");
       expect(stdout).toContain("Completion promise detected");
       expect(stdout).toContain("Tools:     edit 1");
-      const piArgs = readFileSync(capturedArgs, "utf-8").split("\n");
-      expect(piArgs.slice(0, 7)).toEqual([
-        "-p",
-        "--no-session",
+      const piArgs = readFileSync(capturedArgs, "utf-8").trim().split("\n");
+      expect(piArgs).toEqual([
         "--mode",
-        "json",
+        "rpc",
+        "--no-session",
         "--model",
         "google/gemini-2.5-pro",
         "--approve",
       ]);
-      const piPrompt = piArgs.slice(7).join("\n");
-      expect(piPrompt).toContain("Complete the task. Output <promise>COMPLETE</promise> when done.");
-      expect(piPrompt).toContain("Verify Pi task mode");
+      const piCommands = readFileSync(capturedCommands, "utf-8")
+        .trim()
+        .split("\n")
+        .map(line => JSON.parse(line));
+      expect(piCommands.map(command => command.type)).toEqual(["prompt"]);
+      expect(piCommands[0].message).toContain("Complete the task. Output <promise>COMPLETE</promise> when done.");
+      expect(piCommands[0].message).toContain("Verify Pi task mode");
       expect(readFileSync(join(workdir, ".ralph", "ralph-tasks.md"), "utf-8")).toContain(
         "- [x] Verify Pi task mode",
       );
@@ -521,6 +535,57 @@ exit 1
       if (existsSync(workdir)) rmSync(workdir, { recursive: true, force: true });
     }
   });
+
+  it("ignores completion promises when Pi exits before agent_settled", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "ralph-pi-unsettled-completion."));
+    const fakePi = join(workdir, "pi");
+    const rootDir = join(import.meta.dir, "..");
+
+    try {
+      writeFileSync(fakePi, `#!/usr/bin/env bash
+while IFS= read -r command; do
+  if [[ "$command" == *'"type":"prompt"'* ]]; then
+    id=$(printf '%s' "$command" | sed -n 's/.*"id":"\\([^"]*\\)".*/\\1/p')
+    printf '{"type":"response","id":"%s","command":"prompt","success":true}\\n' "$id"
+    echo '{"type":"agent_start"}'
+    echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
+    exit 0
+  fi
+done
+`);
+      chmodSync(fakePi, 0o755);
+
+      const proc = Bun.spawn({
+        cmd: [
+          "bun",
+          join(rootDir, "ralph.ts"),
+          "Do not finish without settlement.",
+          "--agent", "pi",
+          "--max-iterations", "1",
+          "--no-commit",
+          "--no-questions",
+          "--no-allow-all",
+        ],
+        cwd: workdir,
+        env: { ...process.env, RALPH_PI_BINARY: fakePi },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("Completion promise: not detected");
+      expect(`${stdout}\n${stderr}`).toContain("exited before agent_settled");
+      expect(stdout).not.toContain("Task completed in");
+    } finally {
+      if (existsSync(workdir)) rmSync(workdir, { recursive: true, force: true });
+    }
+  });
 });
 
 it("ignores promise text from Pi user events until the assistant emits it", async () => {
@@ -531,16 +596,25 @@ it("ignores promise text from Pi user events until the assistant emits it", asyn
 
   try {
     writeFileSync(fakePi, `#!/usr/bin/env bash
-count=0
-if [ -f "${countFile}" ]; then count=$(cat "${countFile}"); fi
-count=$((count + 1))
-printf '%s' "$count" > "${countFile}"
-echo '{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
-if [ "$count" -eq 1 ]; then
-  echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"One backlog item completed; continue."}]}}'
-else
-  echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
-fi
+while IFS= read -r command; do
+  if [[ "$command" == *'"type":"prompt"'* ]]; then
+    count=0
+    if [ -f "${countFile}" ]; then count=$(cat "${countFile}"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "${countFile}"
+    id=$(printf '%s' "$command" | sed -n 's/.*"id":"\\([^"]*\\)".*/\\1/p')
+    printf '{"type":"response","id":"%s","command":"prompt","success":true}\\n' "$id"
+    echo '{"type":"agent_start"}'
+    echo '{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
+    if [ "$count" -eq 1 ]; then
+      echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"One backlog item completed; continue."}]}}'
+    else
+      echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
+    fi
+    echo '{"type":"agent_end","messages":[],"willRetry":false}'
+    echo '{"type":"agent_settled"}'
+  fi
+done
 `);
     chmodSync(fakePi, 0o755);
 

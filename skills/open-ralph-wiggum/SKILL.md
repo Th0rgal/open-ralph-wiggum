@@ -5,7 +5,7 @@ description: >
   This skill can be used by any AI assistant or IDE agent (GitHub Copilot, Claude Code, Cursor, Windsurf, etc.).
   Triggers on: "ralph", "ralph wiggum", "agentic loop", "iterative AI loop", "autonomous coding loop",
   "how to install ralph", "how to use ralph with Claude Code / Codex / Copilot / Cursor Agent / Qwen Code / Pi / OpenCode",
-  "ralph --agent", "ralph --tasks", "ralph --status", "--max-iterations", "--rotation",
+  "ralph --agent", "ralph --tasks", "ralph --status", "ralph --steer", "--max-iterations", "--rotation",
   "how do I run ralph in VS Code / Cursor / JetBrains / Neovim",
   or any question about looping an AI coding agent until a task is done.
   Even if the user doesn't say "ralph" explicitly — if they want to run an AI agent in a loop
@@ -125,7 +125,7 @@ ralph "Fix the failing tests. Output <promise>COMPLETE</promise> when done." \
   --agent pi --max-iterations 15
 ```
 
-Requires Pi installed via `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`.
+Requires Pi installed via `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`. Current-iteration steering also requires RPC mode and `agent_settled` support.
 
 ---
 
@@ -236,6 +236,7 @@ Use environment variables to point to a custom binary path if the CLI is not on 
 --allow-all              Auto-approve all tool permission prompts (default: on)
 --status                 Show live loop status from another terminal
 --add-context TEXT       Inject a hint for the next iteration without stopping the loop
+--steer TEXT            Steer the current Pi iteration at its next safe turn boundary
 --clear-context          Remove pending context
 --list-tasks             List current tasks (Tasks Mode)
 --add-task TEXT          Add a task (Tasks Mode)
@@ -430,11 +431,14 @@ From a second terminal in the same project directory:
 
 ```bash
 ralph --status      # Shows iteration progress, history, struggle indicators
-ralph --add-context "The bug is in utils/parser.ts line 42"  # Guide the agent
+ralph --add-context "The bug is in utils/parser.ts line 42"  # Next iteration
+ralph --steer "Inspect the parser failure first"  # Current Pi iteration only
 ralph --clear-context  # Remove queued hint
 ```
 
 The status dashboard shows iteration count, time elapsed, tool usage per iteration, and struggle warnings (e.g., no file changes in N iterations).
+
+`--add-context` writes guidance for the next iteration and works with every agent. `--steer` sends guidance to the currently running Pi process; Pi consumes it after current tool calls and before the next model call. Steering fails explicitly for non-Pi agents, inactive/ended iterations, or ambiguous concurrent loops, and never falls back to context.
 
 The `--status` output includes:
 
