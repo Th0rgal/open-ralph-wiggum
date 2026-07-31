@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">Open Ralph Wiggum</h1>
-  <h3 align="center">Autonomous Agentic Loop for Claude Code, Codex, Copilot CLI, Cursor Agent, Qwen Code & OpenCode</h3>
+  <h3 align="center">Autonomous Agentic Loop for Claude Code, Codex, Copilot CLI, Cursor Agent, Qwen Code, Pi & OpenCode</h3>
 </p>
 
 <p align="center">
@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <em>Works with <b>Claude Code</b>, <b>OpenAI Codex</b>, <b>Copilot CLI</b>, <b>Cursor Agent</b>, <b>Qwen Code</b>, and <b>OpenCode</b> — switch agents with <code>--agent</code>.</em><br>
+  <em>Works with <b>Claude Code</b>, <b>OpenAI Codex</b>, <b>Copilot CLI</b>, <b>Cursor Agent</b>, <b>Qwen Code</b>, <b>Pi</b>, and <b>OpenCode</b> — switch agents with <code>--agent</code>.</em><br>
   <em>Based on the <a href="https://ghuntley.com/ralph/">Ralph Wiggum technique</a> by Geoffrey Huntley</em>
 </p>
 
@@ -48,6 +48,7 @@ Open Ralph Wiggum works with multiple AI coding agents. Switch between them usin
 | **Copilot CLI** | `--agent copilot` | GitHub Copilot CLI for agentic coding |
 | **Cursor Agent** | `--agent cursor-agent` | Cursor Agent CLI for headless AI coding |
 | **Qwen Code** | `--agent qwen-code` | Alibaba's Qwen Code CLI for headless AI coding |
+| **Pi** | `--agent pi` | Minimal, extensible terminal coding agent |
 | **OpenCode** | `--agent opencode` | Default agent, open-source AI coding assistant |
 
 ```bash
@@ -66,6 +67,9 @@ ralph "Add unit tests" --agent cursor-agent --max-iterations 10
 # Use Qwen Code
 ralph "Add unit tests" --agent qwen-code --max-iterations 10
 
+# Use Pi
+ralph "Add unit tests" --agent pi --max-iterations 10
+
 # Use OpenCode (default)
 ralph "Fix the failing tests" --max-iterations 10
 ```
@@ -74,14 +78,14 @@ ralph "Fix the failing tests" --max-iterations 10
 
 ## What is Open Ralph Wiggum?
 
-Open Ralph Wiggum implements the **Ralph Wiggum technique** — an autonomous agentic loop where an AI coding agent (Claude Code, Codex, Copilot CLI, Cursor Agent, Qwen Code, or OpenCode) receives the **same prompt repeatedly** until it completes a task. Each iteration, the AI sees its previous work in files and git history, enabling self-correction and incremental progress.
+Open Ralph Wiggum implements the **Ralph Wiggum technique** — an autonomous agentic loop where an AI coding agent (Claude Code, Codex, Copilot CLI, Cursor Agent, Qwen Code, Pi, or OpenCode) receives the **same prompt repeatedly** until it completes a task. Each iteration, the AI sees its previous work in files and git history, enabling self-correction and incremental progress.
 
 This is a **CLI tool** that wraps any supported AI coding agent in a persistent development loop. No plugins required — just install and run.
 
 ```bash
 # The essence of the Ralph loop:
 while true; do
-  claude-code "Build feature X. Output <promise>DONE</promise> when complete."  # or codex, copilot, cursor-agent, qwen, opencode
+  claude-code "Build feature X. Output <promise>DONE</promise> when complete."  # or codex, copilot, cursor-agent, qwen, pi, opencode
 done
 ```
 
@@ -96,16 +100,17 @@ Switch between AI coding agents without changing your workflow:
 - **Copilot CLI** (`--agent copilot`) — GitHub's agentic coding tool
 - **Cursor Agent** (`--agent cursor-agent`) — Cursor's headless AI coding agent
 - **Qwen Code** (`--agent qwen-code`) — Alibaba's Qwen Code headless CLI agent
+- **Pi** (`--agent pi`) — Minimal, extensible terminal coding agent
 - **OpenCode** (`--agent opencode`) — Open-source default option
 
 ## Key Features
 
-- **Multi-Agent Support** — Use Claude Code, Codex, Copilot CLI, Cursor Agent, Qwen Code, or OpenCode with the same workflow
+- **Multi-Agent Support** — Use Claude Code, Codex, Copilot CLI, Cursor Agent, Qwen Code, Pi, or OpenCode with the same workflow
 - **Self-Correcting Loops** — Agent sees its previous work and fixes its own mistakes
 - **Autonomous Execution** — Set it running and come back to finished code
 - **Task Tracking** — Built-in task management with `--tasks` mode
 - **Live Monitoring** — Check progress with `--status` from another terminal
-- **Mid-Loop Hints** — Inject guidance with `--add-context` without stopping
+- **Mid-Loop Guidance** — Use `--add-context` for the next iteration or steer the active Pi turn with `--steer`
 
 ## Why Use an Agentic Loop?
 
@@ -128,6 +133,7 @@ Switch between AI coding agents without changing your workflow:
   - [Copilot CLI](https://github.com/github/copilot-cli) — GitHub's Copilot CLI
   - [Cursor Agent](https://cursor.com/cli/) — Cursor's headless Agent CLI
   - [Qwen Code](https://github.com/QwenLM/qwen-code) — Alibaba's Qwen Code CLI
+  - [Pi](https://pi.dev) — Minimal, extensible terminal coding agent
   - [OpenCode](https://opencode.ai) — Open-source AI coding assistant
 
 ### npm (recommended)
@@ -191,6 +197,10 @@ ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise>
 ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
   --agent qwen-code --max-iterations 5
 
+# Use Pi
+ralph "Create a small CLI and document usage. Output <promise>COMPLETE</promise> when done." \
+  --agent pi --max-iterations 5
+
 # Complex project with Tasks Mode
 ralph "Build a full-stack web application with user auth and database" \
   --tasks --max-iterations 50
@@ -213,6 +223,7 @@ Configure agent binaries with these environment variables:
 | `RALPH_COPILOT_BINARY` | Path to Copilot CLI | `"copilot"` |
 | `RALPH_CURSOR_AGENT_BINARY` | Path to Cursor Agent CLI | `"cursor-agent"` |
 | `RALPH_QWEN_CODE_BINARY` | Path to Qwen Code CLI | `"qwen"` |
+| `RALPH_PI_BINARY` | Path to Pi CLI | `"pi"` |
 
 **Note for Windows users:** Ralph automatically resolves `.cmd` extensions for npm-installed CLIs. If you encounter "command not found" errors, you can use these environment variables to specify the full path to the executable.
 
@@ -224,7 +235,7 @@ Configure agent binaries with these environment variables:
 ralph "<prompt>" [options]
 
 Options:
-  --agent AGENT            AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent, qwen-code
+  --agent AGENT            AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent, qwen-code, pi
   --codex-goal             Run Codex iterations in goal mode; final Codex/OMX prompt starts with /goal
   --codex-backend BACKEND  Backend for --codex-goal: codex or omx (default: detect)
   --codex-goal-native      Force a native /goal attempt even when backend support is unconfirmed
@@ -389,6 +400,9 @@ ralph --status
 # Add context/hints for the next iteration
 ralph --add-context "Focus on fixing the auth module first"
 
+# Steer the current Pi iteration at its next safe turn boundary
+ralph --steer "Inspect the failing test before continuing"
+
 # Clear pending context
 ralph --clear-context
 ```
@@ -437,6 +451,20 @@ ralph --add-context "Try using the singleton pattern for config"
 ```
 
 Context is automatically consumed after one iteration.
+
+### Steering the Current Pi Iteration
+
+When the active iteration uses Pi, steer that same run from another terminal in the same project directory:
+
+```bash
+ralph --steer "Stop the broad refactor and inspect the failing parser test"
+```
+
+Pi consumes the message after the current assistant turn finishes its tool calls and before the next model call. The command waits until that safe turn boundary is reached. It does not interrupt a running tool.
+
+`--steer` fails without changing context when the active agent is not Pi, the iteration has ended, no loop is active, or multiple loops are active in the same workspace. It never falls back to `--add-context`. Closing the controller before it reports success does not retract a message Pi has already accepted.
+
+Use `--add-context` when guidance should apply to the next iteration. Ralph's control layer does not write steering text to state, history, or context files. Pi extensions and model providers may have their own external logging. Pi steering requires a Pi release with RPC mode and `agent_settled` support.
 
 ## Troubleshooting
 
@@ -786,6 +814,36 @@ ralph "Add integration tests for the API" \
 - Headless mode uses `--output-format stream-json --include-partial-messages`
 - See [headless docs](https://qwenlm.github.io/qwen-code-docs/en/users/features/headless/) for details
 
+### Pi
+
+[Pi](https://pi.dev) is a minimal, extensible terminal coding agent.
+
+**Install:**
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+```
+
+**Usage:**
+```bash
+ralph "Fix the failing tests" \
+  --agent pi \
+  --max-iterations 10
+
+# With a specific model
+ralph "Refactor the auth module" \
+  --agent pi \
+  --model anthropic/claude-sonnet-4-5 \
+  --max-iterations 15
+```
+
+**Notes:**
+- Ralph runs each Pi iteration with `pi -p --no-session`; streaming mode adds `--mode json` for assistant output and tool summaries
+- The CLI binary is `pi`; override it with `RALPH_PI_BINARY`
+- Pi model patterns are passed through with `--model`
+- Pass Pi-specific flags after `--`, for example `-- --approve` to trust project-local resources
+- Pi has no built-in permission prompts, so Ralph's `--allow-all` and `--no-allow-all` add no Pi flags
+- `--no-plugins` has no effect with Pi
+
 ### Cursor Agent
 
 [Cursor Agent](https://cursor.com/cli/) is Cursor's headless CLI agent. It works with any model available through your Cursor subscription.
@@ -826,7 +884,7 @@ Each rotation entry uses the `agent:model` format:
 --rotation "agent1:model1,agent2:model2,agent3:model3"
 ```
 
-**Valid agents:** `opencode`, `claude-code`, `codex`, `copilot`, `cursor-agent`, `qwen-code`
+**Valid agents:** `opencode`, `claude-code`, `codex`, `copilot`, `cursor-agent`, `qwen-code`, `pi`
 
 ### Example Usage
 
@@ -866,7 +924,7 @@ Invalid rotation entries produce clear error messages:
 
 **Invalid agent name:**
 ```
-Error: Invalid agent 'invalid' in rotation entry 'invalid:model'. Valid agents: opencode, claude-code, codex, copilot, cursor-agent, qwen-code
+Error: Invalid agent 'invalid' in rotation entry 'invalid:model'. Valid agents: opencode, claude-code, codex, copilot, cursor-agent, qwen-code, pi
 ```
 
 **Malformed entry (missing colon):**

@@ -5,9 +5,11 @@ import { join } from "path";
 import {
   checkTerminalPromise,
   containsPromiseTag,
+  createPiStreamReducer,
   extractAgentCompletionText,
   extractClaudeStreamDisplayLines,
   extractCursorAgentStreamDisplayLines,
+  extractPiStreamDisplayLines,
   getLastNonEmptyLine,
   tasksMarkdownAllComplete,
 } from "../completion";
@@ -205,6 +207,165 @@ describe("agent stream output extraction", () => {
     expect(extractCursorAgentStreamDisplayLines(line)).toEqual(["ready", "<promise>COMPLETE</promise>"]);
   });
 
+  it("extracts Pi assistant text and ignores lifecycle events", () => {
+    const output = [
+      JSON.stringify({ type: "session", version: 3 }),
+      JSON.stringify({ type: "tool_execution_start", toolName: "edit" }),
+      JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done\n<promise>COMPLETE</promise>" }],
+        },
+      }),
+    ].join("\n");
+
+    expect(extractPiStreamDisplayLines(output.split("\n")[0])).toEqual([]);
+    expect(extractPiStreamDisplayLines(output.split("\n")[1])).toEqual([]);
+    expect(checkTerminalPromise(extractAgentCompletionText(output, "pi"), "COMPLETE")).toBe(true);
+  });
+
+  it("reduces cumulative Pi events without retaining their raw payloads", () => {
+    const reducer = createPiStreamReducer();
+    const repeatedPayload = "x".repeat(32 * 1024);
+
+    for (let index = 0; index < 128; index++) {
+      reducer.pushLine(JSON.stringify({
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: `${index}:${repeatedPayload}` }],
+        },
+      }), false);
+    }
+
+    const toolEffect = reducer.pushLine(JSON.stringify({
+      type: "tool_execution_start",
+      toolCallId: "call_1",
+      toolName: "edit",
+      args: {},
+    }), false);
+    reducer.pushLine(JSON.stringify({
+      type: "tool_execution_end",
+      toolCallId: "call_1",
+      toolName: "edit",
+      result: { content: [{ type: "text", text: repeatedPayload }] },
+      isError: false,
+    }), false);
+    reducer.pushLine(JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "<promise>COMPLETE</promise>" }],
+      },
+    }), false);
+    reducer.pushLine(JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "done\n<promise>COMPLETE</promise>" }],
+      },
+    }), false);
+
+    const summary = reducer.finish();
+    expect(toolEffect.toolName).toBe("edit");
+    expect(summary.completionText).toBe("done\n<promise>COMPLETE</promise>");
+    expect(summary.completionText.length + summary.diagnosticText.length).toBeLessThan(1024);
+  });
+
+  it("ignores every promise from non-assistant Pi events", () => {
+    const reducer = createPiStreamReducer();
+    const falsePromises = [
+      "<promise>COMPLETE</promise>",
+      "<promise>ABORT</promise>",
+      "<promise>READY_FOR_NEXT_TASK</promise>",
+    ].join("\n");
+
+    for (const event of [
+      { type: "message_update", message: { role: "assistant", content: falsePromises } },
+      { type: "tool_execution_end", result: { content: falsePromises }, isError: false },
+      { type: "message_end", message: { role: "user", content: falsePromises } },
+      { type: "message_end", message: { role: "toolResult", content: falsePromises } },
+      { type: "agent_end", messages: [{ role: "assistant", content: falsePromises }] },
+    ]) {
+      reducer.pushLine(JSON.stringify(event), false);
+    }
+    reducer.pushLine(
+      `{"type":"message_end","message":{"role":"user","content":${JSON.stringify(falsePromises)}`,
+      false,
+    );
+
+    expect(reducer.finish().completionText).toBe("");
+  });
+
+  it("discards irrelevant Pi events without parsing their payloads", () => {
+    const reducer = createPiStreamReducer();
+    const effect = reducer.pushLine(
+      `{"type":"message_update","message":"${"x".repeat(128 * 1024)}`,
+      false,
+    );
+
+    expect(effect.displayLines).toEqual([]);
+    expect(reducer.finish().completionText).toBe("");
+  });
+
+  it("retains Pi stdout errors for bounded diagnostics", () => {
+    const reducer = createPiStreamReducer();
+
+    reducer.pushLine(JSON.stringify({
+      type: "error",
+      error: { message: "ProviderModelNotFoundError: missing model" },
+    }), false);
+    reducer.pushLine(JSON.stringify({
+      type: "tool_execution_end",
+      toolCallId: "call_failed",
+      toolName: "bash",
+      isError: true,
+      result: { content: [{ type: "text", text: "error: command failed" }] },
+    }), false);
+
+    const summary = reducer.finish();
+    expect(summary.diagnosticText).toContain("ProviderModelNotFoundError: missing model");
+    expect(summary.diagnosticText).toContain("error: command failed");
+  });
+
+  it("bounds Pi diagnostics and retains the question signal", () => {
+    const reducer = createPiStreamReducer();
+    const diagnosticTail = ":diagnostic-tail";
+
+    reducer.pushLine(`error:${"x".repeat(128 * 1024)}${diagnosticTail}`, true);
+    reducer.pushLine(JSON.stringify({
+      type: "tool_execution_start",
+      toolCallId: "call_question",
+      toolName: "question",
+      args: { question: "Should I continue?" },
+    }), false);
+
+    const summary = reducer.finish();
+    expect(summary.diagnosticText.length).toBe(64 * 1024);
+    expect(summary.diagnosticText).toEndWith(diagnosticTail);
+    expect(summary.question).toBe("Should I continue?");
+  });
+
+  it("keeps only a bounded tail of the final Pi assistant text", () => {
+    const reducer = createPiStreamReducer();
+    reducer.pushLine(JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{
+          type: "text",
+          text: `${"女".repeat(128 * 1024)}\n<promise>COMPLETE</promise>`,
+        }],
+      },
+    }), false);
+
+    const summary = reducer.finish();
+    expect(new TextEncoder().encode(summary.completionText).byteLength).toBeLessThanOrEqual(64 * 1024);
+    expect(summary.completionText).not.toContain("\uFFFD");
+    expect(checkTerminalPromise(summary.completionText, "COMPLETE")).toBe(true);
+  });
+
   it("leaves non-streaming agents unchanged for completion detection", () => {
     const output = "Finished\n<promise>COMPLETE</promise>";
     expect(extractAgentCompletionText(output, "opencode")).toBe(output);
@@ -242,6 +403,255 @@ describe("agent stream output extraction", () => {
   });
 });
 
+describe("Pi agent invocation", () => {
+  it("runs Pi in fresh RPC mode", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "ralph-pi-agent-test."));
+    const fakePi = join(workdir, "pi");
+    const capturedArgs = join(workdir, "pi-args.txt");
+    const capturedCommands = join(workdir, "pi-commands.jsonl");
+    const rootDir = join(import.meta.dir, "..");
+
+    try {
+      writeFileSync(fakePi, `#!/usr/bin/env bash
+printf '%s\\n' "$@" > "${capturedArgs}"
+while IFS= read -r command; do
+  printf '%s\\n' "$command" >> "${capturedCommands}"
+  if [[ "$command" == *'"type":"prompt"'* ]]; then
+    id=$(printf '%s' "$command" | sed -n 's/.*"id":"\\([^"]*\\)".*/\\1/p')
+    printf '{"type":"response","id":"%s","command":"prompt","success":true}\\n' "$id"
+    echo '{"type":"agent_start"}'
+    echo '{"type":"tool_execution_start","toolCallId":"call_1","toolName":"edit","args":{}}'
+    cat > .ralph/ralph-tasks.md <<'TASKS'
+# Ralph Tasks
+
+- [x] Verify Pi task mode
+TASKS
+    echo '{"type":"tool_execution_end","toolCallId":"call_1","toolName":"edit","result":{},"isError":false}'
+    echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
+    echo '{"type":"agent_end","messages":[],"willRetry":false}'
+    echo '{"type":"agent_settled"}'
+  fi
+done
+`);
+      chmodSync(fakePi, 0o755);
+      await Bun.$`mkdir -p ${join(workdir, ".ralph")}`;
+      writeFileSync(join(workdir, ".ralph", "ralph-tasks.md"), "# Ralph Tasks\n\n- [ ] Verify Pi task mode\n");
+
+      const proc = Bun.spawn({
+        cmd: [
+          "bun",
+          join(rootDir, "ralph.ts"),
+          "Complete the task. Output <promise>COMPLETE</promise> when done.",
+          "--agent", "pi",
+          "--model", "google/gemini-2.5-pro",
+          "--max-iterations", "1",
+          "--tasks",
+          "--no-commit",
+          "--no-questions",
+          "--no-allow-all",
+          "--",
+          "--approve",
+        ],
+        cwd: workdir,
+        env: { ...process.env, RALPH_PI_BINARY: fakePi },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(stdout).toContain("Iterative AI Development with Pi");
+      expect(stdout).toContain("Completion promise detected");
+      expect(stdout).toContain("Tools:     edit 1");
+      const piArgs = readFileSync(capturedArgs, "utf-8").trim().split("\n");
+      expect(piArgs).toEqual([
+        "--mode",
+        "rpc",
+        "--no-session",
+        "--model",
+        "google/gemini-2.5-pro",
+        "--approve",
+      ]);
+      const piCommands = readFileSync(capturedCommands, "utf-8")
+        .trim()
+        .split("\n")
+        .map(line => JSON.parse(line));
+      expect(piCommands.map(command => command.type)).toEqual(["prompt"]);
+      expect(piCommands[0].message).toContain("Complete the task. Output <promise>COMPLETE</promise> when done.");
+      expect(piCommands[0].message).toContain("Verify Pi task mode");
+      expect(readFileSync(join(workdir, ".ralph", "ralph-tasks.md"), "utf-8")).toContain(
+        "- [x] Verify Pi task mode",
+      );
+    } finally {
+      if (existsSync(workdir)) rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it("detects model errors from Pi stdout events", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "ralph-pi-model-error-test."));
+    const fakePi = join(workdir, "pi");
+    const rootDir = join(import.meta.dir, "..");
+
+    try {
+      writeFileSync(fakePi, `#!/usr/bin/env bash
+echo '{"type":"error","error":{"message":"ProviderModelNotFoundError: missing model"}}'
+exit 1
+`);
+      chmodSync(fakePi, 0o755);
+
+      const proc = Bun.spawn({
+        cmd: [
+          "bun",
+          join(rootDir, "ralph.ts"),
+          "Run the task.",
+          "--agent", "pi",
+          "--max-iterations", "1",
+          "--no-commit",
+          "--no-questions",
+          "--no-allow-all",
+        ],
+        cwd: workdir,
+        env: { ...process.env, RALPH_PI_BINARY: fakePi },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      const [, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("Model configuration error detected");
+      expect(stderr).toContain("could not find a valid model");
+    } finally {
+      if (existsSync(workdir)) rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores completion promises when Pi exits before agent_settled", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "ralph-pi-unsettled-completion."));
+    const fakePi = join(workdir, "pi");
+    const rootDir = join(import.meta.dir, "..");
+
+    try {
+      writeFileSync(fakePi, `#!/usr/bin/env bash
+while IFS= read -r command; do
+  if [[ "$command" == *'"type":"prompt"'* ]]; then
+    id=$(printf '%s' "$command" | sed -n 's/.*"id":"\\([^"]*\\)".*/\\1/p')
+    printf '{"type":"response","id":"%s","command":"prompt","success":true}\\n' "$id"
+    echo '{"type":"agent_start"}'
+    echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
+    exit 0
+  fi
+done
+`);
+      chmodSync(fakePi, 0o755);
+
+      const proc = Bun.spawn({
+        cmd: [
+          "bun",
+          join(rootDir, "ralph.ts"),
+          "Do not finish without settlement.",
+          "--agent", "pi",
+          "--max-iterations", "1",
+          "--no-commit",
+          "--no-questions",
+          "--no-allow-all",
+        ],
+        cwd: workdir,
+        env: { ...process.env, RALPH_PI_BINARY: fakePi },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("Completion promise: not detected");
+      expect(`${stdout}\n${stderr}`).toContain("exited before agent_settled");
+      expect(stdout).not.toContain("Task completed in");
+    } finally {
+      if (existsSync(workdir)) rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+});
+
+it("ignores promise text from Pi user events until the assistant emits it", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "ralph-pi-completion-test."));
+  const fakePi = join(workdir, "pi");
+  const countFile = join(workdir, "pi-count.txt");
+  const rootDir = join(import.meta.dir, "..");
+
+  try {
+    writeFileSync(fakePi, `#!/usr/bin/env bash
+while IFS= read -r command; do
+  if [[ "$command" == *'"type":"prompt"'* ]]; then
+    count=0
+    if [ -f "${countFile}" ]; then count=$(cat "${countFile}"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "${countFile}"
+    id=$(printf '%s' "$command" | sed -n 's/.*"id":"\\([^"]*\\)".*/\\1/p')
+    printf '{"type":"response","id":"%s","command":"prompt","success":true}\\n' "$id"
+    echo '{"type":"agent_start"}'
+    echo '{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
+    if [ "$count" -eq 1 ]; then
+      echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"One backlog item completed; continue."}]}}'
+    else
+      echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"<promise>COMPLETE</promise>"}]}}'
+    fi
+    echo '{"type":"agent_end","messages":[],"willRetry":false}'
+    echo '{"type":"agent_settled"}'
+  fi
+done
+`);
+    chmodSync(fakePi, 0o755);
+
+    const proc = Bun.spawn({
+      cmd: [
+        "bun",
+        join(rootDir, "ralph.ts"),
+        "Process the backlog.",
+        "--agent", "pi",
+        "--max-iterations", "2",
+        "--no-commit",
+        "--no-questions",
+        "--no-allow-all",
+      ],
+      cwd: workdir,
+      env: { ...process.env, RALPH_PI_BINARY: fakePi },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    expect(readFileSync(countFile, "utf-8")).toBe("2");
+    expect(stdout).toContain("One backlog item completed; continue.");
+    expect(stdout).toContain("Completion promise: not detected");
+    expect(stdout).toContain("Iteration 2 / 2");
+    expect(stdout).toContain("Completion promise detected");
+  } finally {
+    if (existsSync(workdir)) rmSync(workdir, { recursive: true, force: true });
+  }
+});
 
 describe("activity timeout retry", () => {
   it("kills an inactive agent and starts the next iteration", async () => {

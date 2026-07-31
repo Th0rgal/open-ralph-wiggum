@@ -9,12 +9,11 @@
 import { $ } from "bun";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "fs";
 import { join } from "path";
+import { startAgentIteration } from "./agent-iteration";
+import { LoopControlError, startLoopControl, steerCurrentIteration } from "./loop-control";
 import {
   checkTerminalPromise,
   containsPromiseTag,
-  extractAgentCompletionText,
-  extractClaudeStreamDisplayLines,
-  extractCursorAgentStreamDisplayLines,
   stripAnsi,
   tasksMarkdownAllComplete,
 } from "./completion";
@@ -38,7 +37,7 @@ const questionsPath = join(stateDir, "ralph-questions.json");
 let customConfigPath = "";
 let initConfigPath = "";
 
-const AGENT_TYPES = ["opencode", "claude-code", "codex", "copilot", "cursor-agent", "qwen-code"] as const;
+const AGENT_TYPES = ["opencode", "claude-code", "codex", "copilot", "cursor-agent", "qwen-code", "pi"] as const;
 type AgentType = (typeof AGENT_TYPES)[number];
 
 type AgentEnvOptions = { filterPlugins?: boolean; allowAllPermissions?: boolean };
@@ -119,6 +118,17 @@ const PARSE_PATTERNS: Record<string, (line: string) => string | null> = {
     }
     return null;
   },
+  "pi": (line) => {
+    const cleanLine = stripAnsi(line).trim();
+    if (!cleanLine.startsWith("{")) return null;
+    try {
+      const payload = JSON.parse(cleanLine);
+      if (payload?.type === "tool_execution_start" && typeof payload.toolName === "string") {
+        return payload.toolName;
+      }
+    } catch {}
+    return null;
+  },
   "codex": null,
   "copilot": null,
   "default": (line) => {
@@ -180,6 +190,12 @@ const ARGS_TEMPLATES: Record<string, (prompt: string, model: string, options?: A
     if (options?.streamOutput) cmdArgs.push("--output-format", "stream-json", "--include-partial-messages");
     if (model) cmdArgs.push("--model", model);
     if (options?.allowAllPermissions) cmdArgs.push("--yolo");
+    if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
+    return cmdArgs;
+  },
+  "pi": (_prompt, model, options) => {
+    const cmdArgs = ["--mode", "rpc", "--no-session"];
+    if (model) cmdArgs.push("--model", model);
     if (options?.extraFlags?.length) cmdArgs.push(...options.extraFlags);
     return cmdArgs;
   },
@@ -252,6 +268,7 @@ function getDefaultConfig(): RalphConfig {
       { type: "copilot", command: "copilot", configName: "Copilot CLI", argsTemplate: "copilot", envTemplate: "default", parsePattern: "copilot" },
       { type: "cursor-agent", command: "cursor-agent", configName: "Cursor Agent", argsTemplate: "cursor-agent", envTemplate: "default", parsePattern: "cursor-agent" },
       { type: "qwen-code", command: "qwen", configName: "Qwen Code", argsTemplate: "qwen-code", envTemplate: "default", parsePattern: "qwen-code" },
+      { type: "pi", command: "pi", configName: "Pi", argsTemplate: "pi", envTemplate: "default", parsePattern: "pi" },
     ],
   };
 }
@@ -325,6 +342,14 @@ const BUILT_IN_AGENTS: Record<AgentType, AgentConfig> = {
     parseToolOutput: PARSE_PATTERNS["qwen-code"],
     configName: "Qwen Code",
   },
+  pi: {
+    type: "pi",
+    command: resolveCommand("pi", process.env.RALPH_PI_BINARY),
+    buildArgs: ARGS_TEMPLATES["pi"],
+    buildEnv: ENV_TEMPLATES["default"],
+    parseToolOutput: PARSE_PATTERNS["pi"],
+    configName: "Pi",
+  },
 };
 
 // Parse arguments early for --config and --init-config handling
@@ -335,6 +360,26 @@ const AGENTS: Record<string, AgentConfig> = { ...BUILT_IN_AGENTS };
 if (customAgents) {
   for (const [type, json] of Object.entries(customAgents)) {
     AGENTS[type] = createAgentConfig(json);
+  }
+}
+
+// Handle current-iteration steering before normal loop option parsing.
+const steerIdx = args.indexOf("--steer");
+if (steerIdx !== -1) {
+  const steerText = args[steerIdx + 1];
+  if (!steerText || steerText.startsWith("--")) {
+    console.error("Error: --steer requires text for the current Pi iteration");
+    console.error('Usage: ralph --steer "Your steering instruction"');
+    process.exit(1);
+  }
+  try {
+    await steerCurrentIteration(process.cwd(), steerText);
+    console.log("Steering delivered to the active Pi iteration.");
+    process.exit(0);
+  } catch (error) {
+    const message = error instanceof LoopControlError ? error.message : "Unable to steer the active Ralph loop.";
+    console.error(`Error: ${message}`);
+    process.exit(1);
   }
 }
 
@@ -376,7 +421,7 @@ Arguments:
   prompt              Task description for the AI to work on
 
 Options:
-  --agent AGENT       AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent, qwen-code
+  --agent AGENT       AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent, qwen-code, pi
   --codex-goal       Run Codex iterations in goal mode; final Codex/OMX prompt starts with /goal
   --codex-backend BACKEND  Backend for --codex-goal: codex or omx (default: detect; env RALPH_CODEX_BACKEND)
   --codex-goal-native  Force a native /goal attempt even when backend support is unconfirmed
@@ -390,7 +435,7 @@ Options:
   --model MODEL       Model to use (agent-specific, e.g., anthropic/claude-sonnet)
   --rotation LIST     Agent/model rotation for each iteration (comma-separated)
                       Each entry must be "agent:model" format
-                      Valid agents: opencode, claude-code, codex, copilot, cursor-agent, qwen-code
+                      Valid agents: opencode, claude-code, codex, copilot, cursor-agent, qwen-code, pi
                       Example: --rotation "opencode:claude-sonnet-4,claude-code:gpt-4o"
                       When used, --agent and --model are ignored
   --prompt-file, --file, -f  Read prompt content from a file
@@ -414,6 +459,7 @@ Commands:
   --status            Show current Ralph loop status and history
   --status --tasks    Show status including current task list
   --add-context TEXT  Add context for the next iteration (or edit .ralph/ralph-context.md)
+  --steer TEXT        Steer the current Pi iteration at its next safe turn boundary
   --clear-context     Clear any pending context
   --list-tasks        Display the current task list with indices
   --add-task "desc"   Add a new task to the list
@@ -428,6 +474,7 @@ Examples:
   ralph --prompt-file ./prompt.md --max-iterations 5
   ralph --status                                        # Check loop status
   ralph --add-context "Focus on the auth module first"  # Add hint for next iteration
+  ralph --steer "Inspect the failing test first"         # Steer the current Pi iteration
   ralph "Build API" -- --agent build                    # Pass flags to the agent
 
 How it works:
@@ -1964,24 +2011,6 @@ function formatToolSummary(toolCounts: Map<string, number>, maxItems = 6): strin
   return parts.join(" • ");
 }
 
-function collectToolSummaryFromText(text: string, agent: AgentConfig): Map<string, number> {
-  const counts = new Map<string, number>();
-  const lines = text.split(/\r?\n/);
-  for (const line of lines) {
-    const tool = agent.parseToolOutput(line);
-    if (tool) {
-      counts.set(tool, (counts.get(tool) ?? 0) + 1);
-    }
-  }
-  return counts;
-}
-
-function terminateProcess(proc: ReturnType<typeof Bun.spawn>, signal: NodeJS.Signals = "SIGTERM"): void {
-  try {
-    proc.kill(signal);
-  } catch {}
-}
-
 function printIterationSummary(params: {
   iteration: number;
   elapsedMs: number;
@@ -2007,177 +2036,6 @@ function printIterationSummary(params: {
   console.log(`Completion promise: ${params.completionDetected ? "detected" : "not detected"}`);
 }
 
-async function streamProcessOutput(
-  proc: ReturnType<typeof Bun.spawn>,
-  options: {
-    compactTools: boolean;
-    toolSummaryIntervalMs: number;
-    heartbeatIntervalMs: number;
-    iterationStart: number;
-    agent: AgentConfig;
-    onHeartbeatTimer?: (timer: ReturnType<typeof setInterval>) => void;
-    abortSignal?: AbortSignal;
-    lastActivityTimeoutMs?: number;
-    onActivityTimeout?: () => void;
-  },
-): Promise<{ stdoutText: string; stderrText: string; toolCounts: Map<string, number> }> {
-  const toolCounts = new Map<string, number>();
-  let stdoutText = "";
-  let stderrText = "";
-  let lastPrintedAt = Date.now();
-  let lastActivityAt = Date.now();
-  let lastToolSummaryAt = 0;
-  let activityTimedOut = false;
-
-  const compactTools = options.compactTools;
-  const parseToolOutput = options.agent.parseToolOutput;
-
-  const maybePrintToolSummary = (force = false) => {
-    if (!compactTools || toolCounts.size === 0) return;
-    const now = Date.now();
-    if (!force && now - lastToolSummaryAt < options.toolSummaryIntervalMs) {
-      return;
-    }
-    const summary = formatToolSummary(toolCounts);
-    if (summary) {
-      console.log(`| Tools    ${summary}`);
-      lastPrintedAt = Date.now();
-      lastToolSummaryAt = Date.now();
-    }
-  };
-
-  const handleLine = (line: string, isError: boolean) => {
-    lastActivityAt = Date.now();
-    const tool = parseToolOutput(line);
-    const outputLines = options.agent.type === "claude-code" || options.agent.type === "qwen-code"
-      ? extractClaudeStreamDisplayLines(line)
-      : options.agent.type === "cursor-agent"
-      ? extractCursorAgentStreamDisplayLines(line)
-      : [line];
-    if (tool) {
-      toolCounts.set(tool, (toolCounts.get(tool) ?? 0) + 1);
-      if (compactTools && outputLines.length === 0) {
-        maybePrintToolSummary();
-        return;
-      }
-    }
-
-    for (const outputLine of outputLines) {
-      if (outputLine.length === 0) {
-        console.log("");
-        lastPrintedAt = Date.now();
-        continue;
-      }
-      if (isError) {
-        console.error(outputLine);
-      } else {
-        console.log(outputLine);
-      }
-      lastPrintedAt = Date.now();
-    }
-  };
-
-  const streamText = async (
-    stream: ReadableStream<Uint8Array> | null,
-    onText: (chunk: string) => void,
-    isError: boolean,
-  ) => {
-    if (!stream) return;
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    
-    // Create abort promise if signal provided
-    const abortPromise = options.abortSignal
-      ? new Promise<{ value: undefined; done: true }>((resolve, reject) => {
-          const handler = () => {
-            options.abortSignal?.removeEventListener('abort', handler);
-            resolve({ value: undefined, done: true });
-          };
-          options.abortSignal.addEventListener('abort', handler);
-        })
-      : new Promise<{ value: undefined; done: true }>(() => {});
-    
-    while (true) {
-      const result = options.abortSignal
-        ? await Promise.race([reader.read(), abortPromise])
-        : await reader.read();
-      
-      const { value, done } = result;
-      if (done) break;
-      const text = decoder.decode(value, { stream: true });
-      if (text.length > 0) {
-        onText(text);
-        buffer += text;
-        const lines = buffer.split(/\r?\n/);
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          handleLine(line, isError);
-        }
-      }
-    }
-    const flushed = decoder.decode();
-    if (flushed.length > 0) {
-      onText(flushed);
-      buffer += flushed;
-    }
-    if (buffer.length > 0) {
-      handleLine(buffer, isError);
-    }
-  };
-
-  const heartbeatTimer = setInterval(() => {
-    const now = Date.now();
-    if (now - lastPrintedAt >= options.heartbeatIntervalMs) {
-      const elapsed = formatDuration(now - options.iterationStart);
-      const sinceActivity = formatDuration(now - lastActivityAt);
-      console.log(`⏳ working... elapsed ${elapsed} · last activity ${sinceActivity} ago`);
-      lastPrintedAt = now;
-    }
-    // Check for inactivity timeout
-    if (!activityTimedOut && options.lastActivityTimeoutMs && options.lastActivityTimeoutMs > 0) {
-      const inactivityMs = now - lastActivityAt;
-      if (inactivityMs >= options.lastActivityTimeoutMs) {
-        activityTimedOut = true;
-        const timeoutDuration = formatDuration(options.lastActivityTimeoutMs);
-        console.log(`\n⏰ Inactivity timeout: no activity for ${timeoutDuration}. Restarting iteration...`);
-        options.onActivityTimeout?.();
-      }
-    }
-  }, options.heartbeatIntervalMs);
-  
-  // Notify caller of heartbeat timer for cleanup
-  if (options.onHeartbeatTimer) {
-    options.onHeartbeatTimer(heartbeatTimer);
-  }
-
-  try {
-    await Promise.all([
-      streamText(
-        proc.stdout,
-        chunk => {
-          stdoutText += chunk;
-        },
-        false,
-      ),
-      streamText(
-        proc.stderr,
-        chunk => {
-          stderrText += chunk;
-        },
-        true,
-      ),
-    ]);
-  } finally {
-    clearInterval(heartbeatTimer);
-  }
-
-  if (compactTools) {
-    maybePrintToolSummary(true);
-  }
-
-  return { stdoutText, stderrText, toolCounts };
-}
 // Main loop
 // Helper to detect per-iteration file changes using content hashes
 // Works correctly with --no-commit by comparing file content hashes
@@ -2338,6 +2196,9 @@ async function runRalphLoop(): Promise<void> {
   if (disablePlugins && agentConfig.type === "qwen-code") {
     console.warn("Warning: --no-plugins has no effect with Qwen Code agent");
   }
+  if (disablePlugins && agentConfig.type === "pi") {
+    console.warn("Warning: --no-plugins has no effect with Pi agent");
+  }
 
   console.log(`
 ╔══════════════════════════════════════════════════════════════════╗
@@ -2368,6 +2229,8 @@ async function runRalphLoop(): Promise<void> {
     codexBackend: codexGoalMode ? resolveCodexBackend(codexBackendInput, AGENTS[initialAgentType]) : undefined,
     codexGoalForceNative: codexGoalForceNative || undefined,
   };
+
+  const loopControl = await startLoopControl(process.cwd());
 
   if (!resuming) {
     saveState(state);
@@ -2435,54 +2298,42 @@ async function runRalphLoop(): Promise<void> {
   console.log("Starting loop... (Ctrl+C to stop)");
   console.log("═".repeat(68));
 
-  // Track current subprocess for cleanup on SIGINT
-  let currentProc: ReturnType<typeof Bun.spawn> | null = null;
+  // The active iteration owns its child process, readers, and heartbeat timer.
+  let currentIterationAbortController: AbortController | null = null;
 
-  // Track current heartbeat timer for cleanup on SIGINT
-  let currentHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
-
-  // Track current AbortController for cancelling stream reading
-  let currentAbortController: AbortController | null = null;
-
-  // Set up signal handler for graceful shutdown
+  // Set up signal handlers for graceful shutdown.
   let stopping = false;
-  process.on("SIGINT", () => {
+  const stopLoop = (signal: "SIGINT" | "SIGTERM") => {
     if (stopping) {
-      console.log("\nForce stopping...");
-      process.exit(1);
+      if (signal === "SIGINT") {
+        console.log("\nForce stopping...");
+        process.exit(1);
+      }
+      return;
     }
     stopping = true;
     console.log("\nGracefully stopping Ralph loop...");
 
-    // Abort any pending stream operations
-    if (currentAbortController) {
-      currentAbortController.abort();
-      currentAbortController = null;
-    }
-
-    // Clear the heartbeat timer immediately to stop status messages
-    if (currentHeartbeatTimer) {
-      clearInterval(currentHeartbeatTimer);
-      currentHeartbeatTimer = null;
-    }
-
-    // Kill the subprocess if it's running
-    if (currentProc) {
-      terminateProcess(currentProc);
+    if (currentIterationAbortController) {
+      currentIterationAbortController.abort();
+      currentIterationAbortController = null;
     }
 
     clearState();
     clearPendingQuestions();
     console.log("Loop cancelled.");
-    
-    // Use setImmediate to allow the abort event to propagate
-    // then force exit. This is more reliable than process.exit()
-    // directly in the signal handler with pending async operations.
-    setImmediate(() => process.exit(0));
-  });
+
+    const exitCode = signal === "SIGTERM" ? 143 : 0;
+    void loopControl.close().finally(() => {
+      setImmediate(() => process.exit(exitCode));
+    });
+  };
+  process.on("SIGINT", () => stopLoop("SIGINT"));
+  process.on("SIGTERM", () => stopLoop("SIGTERM"));
 
   // Main loop
-  while (true) {
+  try {
+    while (true) {
     // Check max iterations
     if (maxIterations > 0 && state.iteration > maxIterations) {
       console.log(`\n╔══════════════════════════════════════════════════════════════════╗`);
@@ -2575,65 +2426,30 @@ async function runRalphLoop(): Promise<void> {
         allowAllPermissions: allowAllPermissions,
       });
 
-      // Run agent using spawn for better argument handling
-      // stdin is inherited so users can respond to permission prompts if needed
-      currentProc = Bun.spawn([command, ...cmdArgs], {
+      const iterationAbortController = new AbortController();
+      currentIterationAbortController = iterationAbortController;
+      const iteration = startAgentIteration({
+        agent: { ...agentConfig, command },
+        args: cmdArgs,
         cwd: process.cwd(),
         env,
-        stdin: "inherit",
-        stdout: "pipe",
-        stderr: "pipe",
+        prompt: fullPrompt,
+        streamOutput,
+        compactTools: !verboseTools,
+        iterationStart,
+        lastActivityTimeoutMs,
+        signal: iterationAbortController.signal,
       });
-      const proc = currentProc;
-      const exitCodePromise = proc.exited;
-      let result = "";
-      let stderr = "";
-      let toolCounts = new Map<string, number>();
-
-      if (streamOutput) {
-        // Create AbortController for this iteration
-        const abortController = new AbortController();
-        currentAbortController = abortController;
-        
-        const streamed = await streamProcessOutput(proc, {
-          compactTools: !verboseTools,
-          toolSummaryIntervalMs: 3000,
-          heartbeatIntervalMs: process.env.NODE_ENV === 'test' ? 1000 : 10000,
-          iterationStart,
-          agent: agentConfig,
-          abortSignal: abortController.signal,
-          lastActivityTimeoutMs,
-          onActivityTimeout: () => {
-            terminateProcess(proc);
-            abortController.abort();
-          },
-          onHeartbeatTimer: (timer) => {
-            currentHeartbeatTimer = timer;
-          },
-        });
-        currentHeartbeatTimer = null; // Clear after streaming completes
-        currentAbortController = null; // Clear after streaming completes
-        result = streamed.stdoutText;
-        stderr = streamed.stderrText;
-        toolCounts = streamed.toolCounts;
-      } else {
-        const stdoutPromise = new Response(proc.stdout).text();
-        const stderrPromise = new Response(proc.stderr).text();
-        [result, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
-        toolCounts = collectToolSummaryFromText(`${result}\n${stderr}`, agentConfig);
+      const deactivateControl = loopControl.activate(currentAgent, iteration.steer);
+      const iterationResult = await iteration.settled.finally(deactivateControl);
+      if (currentIterationAbortController === iterationAbortController) {
+        currentIterationAbortController = null;
       }
 
-      const exitCode = await exitCodePromise;
-      currentProc = null; // Clear reference after subprocess completes
-
-      if (!streamOutput) {
-        if (stderr) {
-          console.error(stderr);
-        }
-        console.log(result);
-      }
-
-      const combinedOutput = `${result}\n${stderr}`;
+      const streamedQuestion = iterationResult.question;
+      const toolCounts = iterationResult.toolCounts;
+      const exitCode = iterationResult.exitCode;
+      const combinedOutput = iterationResult.evidenceText;
 
       if (codexGoalMode && currentAgent === "codex" && codexGoalPromptMode === "native") {
         const confirmed = nativeGoalEvidenceDetected(combinedOutput);
@@ -2651,13 +2467,16 @@ async function runRalphLoop(): Promise<void> {
         });
       }
 
-      // For agents using stream-json, extract display text before checking completion
-      const completionCheckText = extractAgentCompletionText(result, agentConfig.type);
+      const acceptsCompletionSignals = agentConfig.type !== "pi" || iterationResult.termination === "agent-settled";
+      const completionCheckText = acceptsCompletionSignals ? iterationResult.completionText : "";
+      const rawPromiseOutput = acceptsCompletionSignals ? iterationResult.rawPromiseText : undefined;
 
-      const completionSignalDetected = checkCompletion(completionCheckText, completionPromise, result);
-      const abortDetected = abortPromise ? checkCompletion(completionCheckText, abortPromise, result) : false;
-      let taskCompletionDetected = tasksMode ? checkCompletion(completionCheckText, taskPromise, result) : false;
-      const taskGateCompletion = taskCompletionDetected ? { satisfied: false } : taskCompletionSatisfiedByTaskGate(state);
+      const completionSignalDetected = checkCompletion(completionCheckText, completionPromise, rawPromiseOutput);
+      const abortDetected = abortPromise ? checkCompletion(completionCheckText, abortPromise, rawPromiseOutput) : false;
+      let taskCompletionDetected = tasksMode ? checkCompletion(completionCheckText, taskPromise, rawPromiseOutput) : false;
+      const taskGateCompletion = acceptsCompletionSignals && !taskCompletionDetected
+        ? taskCompletionSatisfiedByTaskGate(state)
+        : { satisfied: false };
       if (taskGateCompletion.satisfied) {
         taskCompletionDetected = true;
       }
@@ -2770,7 +2589,8 @@ async function runRalphLoop(): Promise<void> {
           "Remove 'ralph-wiggum' from your opencode.json plugin list, or re-run with --no-plugins.",
         );
         clearState();
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
 
       // Detect model configuration errors (Issues #22, #23).
@@ -2792,7 +2612,12 @@ async function runRalphLoop(): Promise<void> {
         }
         console.error("\n   See the agent's documentation for available models.");
         clearState();
-        process.exit(1);
+        process.exitCode = 1;
+        return;
+      }
+
+      if (agentConfig.type === "pi" && iterationResult.termination !== "agent-settled") {
+        console.warn("\n⚠️  Pi RPC process exited before agent_settled. Completion signals were ignored.");
       }
 
       if (exitCode !== 0) {
@@ -2810,12 +2635,13 @@ async function runRalphLoop(): Promise<void> {
         clearHistory();
         clearContext();
         clearPendingQuestions();
-        process.exit(1); // Exit with error code to indicate abort
+        process.exitCode = 1;
+        return; // Exit with error code to indicate abort
       }
 
       // Check for question tool invocation and prompt user if needed
       if (handleQuestions) {
-        const detectedQuestion = detectQuestionTool(combinedOutput, agentConfig);
+        const detectedQuestion = streamedQuestion ?? detectQuestionTool(combinedOutput, agentConfig);
         if (detectedQuestion) {
           console.log(`\n🤔 Agent asked a question. Pausing to get your answer...`);
           const answer = await promptUser(detectedQuestion);
@@ -2928,22 +2754,9 @@ async function runRalphLoop(): Promise<void> {
       await new Promise(r => setTimeout(r, 1000));
 
     } catch (error) {
-      // Clear heartbeat timer if still running
-      if (currentHeartbeatTimer) {
-        clearInterval(currentHeartbeatTimer);
-        currentHeartbeatTimer = null;
-      }
-      
-      // Abort any pending stream operations
-      if (currentAbortController) {
-        currentAbortController.abort();
-        currentAbortController = null;
-      }
-      
-      // Kill subprocess if still running to prevent orphaned processes
-      if (currentProc) {
-        terminateProcess(currentProc);
-        currentProc = null;
+      if (currentIterationAbortController) {
+        currentIterationAbortController.abort();
+        currentIterationAbortController = null;
       }
       console.error(`\n❌ Error in iteration ${state.iteration}:`, error);
       console.log("Continuing to next iteration...");
@@ -2973,7 +2786,14 @@ async function runRalphLoop(): Promise<void> {
       state.iteration++;
       saveState(state);
       await new Promise(r => setTimeout(r, 2000));
+      }
     }
+  } finally {
+    if (currentIterationAbortController) {
+      currentIterationAbortController.abort();
+      currentIterationAbortController = null;
+    }
+    await loopControl.close();
   }
 }
 

@@ -9,12 +9,14 @@
   "scripts": {
     "start": "bun ralph.ts",
     "build": "bun build ralph.ts --outfile bin/ralph --compile",
-    "test": "bun test ./tests/ralph.test.ts",
+    "test": "bun test ./tests",
     "install-local": "bun link"
   },
   "files": [
     "bin/ralph.js",
     "ralph.ts",
+    "agent-iteration.ts",
+    "loop-control.ts",
     "completion.ts",
     "README.md",
     "LICENSE",

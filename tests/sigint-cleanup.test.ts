@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, unlinkSync } from "fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, unlinkSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 
 const stateDir = join(process.cwd(), ".ralph");
 const statePath = join(stateDir, "ralph-loop.state.json");
 const questionsPath = join(stateDir, "ralph-questions.json");
 const fakeOpencodePath = join(process.cwd(), "tests", "fixtures", "fake-opencode.ts");
+let controlDir = "";
 
 function wait(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -47,6 +49,7 @@ function spawnRalph() {
       ...process.env,
       NODE_ENV: "test",
       RALPH_OPENCODE_BINARY: fakeOpencodePath,
+      RALPH_CONTROL_DIR: controlDir,
     },
   });
 
@@ -77,6 +80,7 @@ async function waitForRalphReady(run: ReturnType<typeof spawnRalph>) {
 
 describe("SIGINT cleanup", () => {
   beforeEach(() => {
+    controlDir = mkdtempSync(join(tmpdir(), "ralph-signal-control."));
     [statePath, questionsPath].forEach(path => {
       if (existsSync(path)) {
         try {
@@ -94,6 +98,7 @@ describe("SIGINT cleanup", () => {
         } catch {}
       }
     });
+    if (controlDir) rmSync(controlDir, { recursive: true, force: true });
   });
 
   it("stops heartbeat output after SIGINT", async () => {
@@ -129,6 +134,20 @@ describe("SIGINT cleanup", () => {
     await run.done();
 
     expect(existsSync(statePath)).toBe(false);
+    expect(readdirSync(controlDir)).toEqual([]);
+  });
+
+  it("cleans up loop control on SIGTERM", async () => {
+    const run = spawnRalph();
+
+    await waitForRalphReady(run);
+    run.proc.kill("SIGTERM");
+    const exitCode = await run.proc.exited;
+    await run.done();
+
+    expect(exitCode).toBe(143);
+    expect(existsSync(statePath)).toBe(false);
+    expect(readdirSync(controlDir)).toEqual([]);
   });
 
   it("handles double SIGINT", async () => {
