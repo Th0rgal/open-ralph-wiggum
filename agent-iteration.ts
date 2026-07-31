@@ -331,15 +331,23 @@ function startPiIteration(input: AgentIterationInput): AgentIteration {
   if (input.signal?.aborted) terminateProcess(proc);
 
   const promptAccepted = sendCommand({ type: "prompt", message: input.prompt });
+  const promptOutcome = promptAccepted.then(
+    () => ({ kind: "prompt" as const }),
+    error => ({
+      kind: "prompt-error" as const,
+      error: error instanceof Error ? error : new Error(String(error)),
+    }),
+  );
   const processExited = proc.exited.then(exitCode => ({ kind: "exit" as const, exitCode }));
   const settledEvent = agentSettled.promise.then(() => ({ kind: "settled" as const }));
   const protocolError = protocolFailed.promise.then(error => ({ kind: "protocol" as const, error }));
 
   const settled = (async (): Promise<IterationResult> => {
     let exitCode: number;
+    let promptError: Error | undefined;
     try {
       const promptOrExit = await Promise.race([
-        promptAccepted.then(() => ({ kind: "prompt" as const })),
+        promptOutcome,
         processExited,
         protocolError,
       ]);
@@ -347,6 +355,11 @@ function startPiIteration(input: AgentIterationInput): AgentIteration {
 
       if (promptOrExit.kind === "exit") {
         exitCode = promptOrExit.exitCode;
+      } else if (promptOrExit.kind === "prompt-error") {
+        promptError = promptOrExit.error;
+        terminateProcess(proc);
+        exitCode = await proc.exited;
+        if (exitCode === 0) exitCode = 1;
       } else {
         const outcome = await Promise.race([settledEvent, processExited, protocolError]);
         if (outcome.kind === "protocol") throw outcome.error;
@@ -368,13 +381,17 @@ function startPiIteration(input: AgentIterationInput): AgentIteration {
 
       if (input.compactTools) maybePrintToolSummary(true);
       const summary = reducer.finish();
+      const promptDiagnostic = promptError ? `Pi RPC prompt failed: ${promptError.message}` : "";
+      const diagnosticText = [summary.diagnosticText, promptDiagnostic].filter(Boolean).join("\n");
       if (!input.streamOutput) {
-        if (summary.diagnosticText) console.error(summary.diagnosticText);
+        if (diagnosticText) console.error(diagnosticText);
         if (summary.completionText) console.log(summary.completionText);
+      } else if (promptDiagnostic && !summary.diagnosticText.includes(promptDiagnostic)) {
+        console.error(promptDiagnostic);
       }
       return {
         completionText: summary.completionText,
-        evidenceText: `${summary.completionText}\n${summary.diagnosticText}`,
+        evidenceText: `${summary.completionText}\n${diagnosticText}`,
         question: summary.question,
         toolCounts,
         exitCode,
