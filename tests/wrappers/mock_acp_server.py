@@ -37,7 +37,16 @@ def handle_request(req):
 
     log_event({"kind": "request", "method": method, "id": rid, "params_keys": list(params.keys())})
 
+    # MOCK_INIT_DELAY: sleep N seconds before responding to initialize.
+    # Simulates slow MCP-server loading (the real failure mode when hermes
+    # loads a profile with many MCP servers that retry-fail with backoff).
     if method == "initialize":
+        init_delay = os.environ.get("MOCK_INIT_DELAY")
+        if init_delay:
+            try:
+                time.sleep(float(init_delay))
+            except ValueError:
+                pass
         # Capture clientInfo.name when MOCK_CAPTURE_CLIENT_INFO=1 (used by the
         # generic-acp-transport tests to assert dynamic CLIENT_INFO).
         if os.environ.get("MOCK_CAPTURE_CLIENT_INFO") == "1":
@@ -140,6 +149,10 @@ def handle_request(req):
 
 
 def main():
+    # MOCK_CAPTURE_ARGS: log raw argv so tests can verify the wrapper forwarded
+    # flags (e.g. -p <profile>) to the binary correctly.
+    if os.environ.get("MOCK_CAPTURE_ARGS") == "1":
+        log_event({"kind": "raw_args", "args": list(sys.argv)})
     log_event({"kind": "start", "pid": os.getpid()})
     buf = ""
     while True:

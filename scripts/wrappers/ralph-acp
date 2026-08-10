@@ -55,6 +55,15 @@ THROTTLING:
   line to stderr when no stdout/stderr activity has occurred for longer than
   RALPH_ACP_HEARTBEAT_SILENCE seconds. This keeps ralph's pre-start
   stall detector fed without the per-token flood.
+
+RPC TIMEOUTS (profile/MCP-aware):
+  `hermes acp -p <profile>` loads MCP servers during startup; failed MCP
+  connections retry with exponential backoff (1+2+4=7s each), pushing the
+  initialize RPC past the old hardcoded 30s timeout. Timeouts are now env-driven:
+    RALPH_ACP_INIT_TIMEOUT     initialize RPC timeout (default 120s; was 30s)
+    RALPH_SESSION_TIMEOUT      session/new + authenticate RPC timeout (default 60s)
+  Legacy aliases (deprecated): RALPH_HERMES_ACP_INIT_TIMEOUT,
+  RALPH_HERMES_ACP_SESSION_TIMEOUT. Garbage values fall back to default.
 """
 from __future__ import annotations
 
@@ -72,6 +81,13 @@ PROTOCOL_VERSION = 1
 
 DEFAULT_HEARTBEAT_SILENCE = 30.0
 DEFAULT_HEARTBEAT_INTERVAL = 1.0
+
+# Initialize/session-new timeouts. The old hardcoded 30s was too short for
+# `hermes acp -p <profile>` which loads MCP servers during startup; failed MCP
+# connections retry with exponential backoff (1+2+4=7s each), pushing init past
+# 30s. 120s gives headroom for ~15 failing MCP servers plus normal init overhead.
+DEFAULT_INIT_TIMEOUT = 120.0
+DEFAULT_SESSION_TIMEOUT = 60.0
 
 # Per-agent binary dispatch table. Keyed by agent identity (derived from
 # argv[0] basename `ralph-acp-<agent>` or RALPH_ACP_AGENT). Users override
@@ -501,6 +517,46 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _resolve_timeout_from_env(env: dict, canonical_key: str, legacy_key: str,
+                              default: float) -> float:
+    """Resolve an RPC timeout from an env dict.
+
+    Precedence: canonical_key > legacy_key > default. Garbage values fall back
+    to default (fail-soft — never crash the loop).
+
+    Takes an explicit ``env`` dict (not os.environ) so unit tests can inject.
+    """
+    for key in (canonical_key, legacy_key):
+        raw = (env.get(key) or "").strip()
+        if raw:
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                _emit_stderr(
+                    f"ralph-acp: ignoring invalid {key}={raw!r}, using default"
+                )
+                return default
+    return default
+
+
+def _resolve_init_timeout(env: dict) -> float:
+    """Initialize RPC timeout. Canonical: RALPH_ACP_INIT_TIMEOUT.
+    Legacy: RALPH_HERMES_ACP_INIT_TIMEOUT. Default: DEFAULT_INIT_TIMEOUT."""
+    return _resolve_timeout_from_env(
+        env, "RALPH_ACP_INIT_TIMEOUT", "RALPH_HERMES_ACP_INIT_TIMEOUT",
+        DEFAULT_INIT_TIMEOUT,
+    )
+
+
+def _resolve_session_timeout(env: dict) -> float:
+    """session/new + authenticate RPC timeout. Canonical: RALPH_ACP_SESSION_TIMEOUT.
+    Legacy: RALPH_HERMES_ACP_SESSION_TIMEOUT. Default: DEFAULT_SESSION_TIMEOUT."""
+    return _resolve_timeout_from_env(
+        env, "RALPH_ACP_SESSION_TIMEOUT", "RALPH_HERMES_ACP_SESSION_TIMEOUT",
+        DEFAULT_SESSION_TIMEOUT,
+    )
+
+
 def _reset_activity() -> None:
     """Clear the global activity tracker (used by tests between runs)."""
     global _ACTIVITY
@@ -651,24 +707,26 @@ def run(prompt: str, model: str, extra: list[str], binary: str,
 
     exit_code = 0
     try:
+        init_timeout = _resolve_init_timeout(os.environ)
+        session_timeout = _resolve_session_timeout(os.environ)
         # initialize
         init = client.request("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
             "clientCapabilities": {},
             "clientInfo": client_info,
-        }, timeout=30.0)
+        }, timeout=init_timeout)
         # authenticate (best-effort)
         auth_methods = init.get("authMethods") or []
         if auth_methods:
             try:
-                client.request("authenticate", {"methodId": auth_methods[0]["id"]}, timeout=30.0)
+                client.request("authenticate", {"methodId": auth_methods[0]["id"]}, timeout=session_timeout)
             except AcpError as e:
                 _emit_stderr(f"[auth skipped] {e}")
         # session/new
         new_sess = client.request("session/new", {
             "cwd": os.getcwd(),
             "mcpServers": [],
-        }, timeout=30.0)
+        }, timeout=session_timeout)
         session_id = new_sess.get("sessionId")
         if not session_id:
             _emit_stderr(f"ralph-acp: session/new returned no sessionId: {new_sess}")

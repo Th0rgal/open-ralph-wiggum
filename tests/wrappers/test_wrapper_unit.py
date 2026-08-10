@@ -317,3 +317,104 @@ def test_main_uses_env_binary(wrapper_mod, monkeypatch, tmp_path):
     # initialize timeout and return non-zero (1), NOT crash.
     rc = wrapper_mod.main()
     assert rc == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Configurable initialize/session timeouts (RED — constants/functions absent)
+#
+# Root cause: hermes acp -p <profile> loads MCP servers during startup; failed
+# connections retry with exponential backoff (1+2+4=7s each), pushing init past
+# the wrapper's HARDCODED 30s initialize timeout. Fix: make timeouts env-driven
+# with defaults that tolerate profile/MCP loading (init=120s, session=60s).
+# ─────────────────────────────────────────────────────────────────────────────
+def test_default_init_timeout_constant_exists(wrapper_mod):
+    """DEFAULT_INIT_TIMEOUT module constant must exist and be >= 120s.
+
+    30s was too short for profile-driven MCP loading; 120s gives headroom for
+    ~15 failing MCP servers (7s backoff each) plus normal init overhead.
+    """
+    assert hasattr(wrapper_mod, "DEFAULT_INIT_TIMEOUT"), (
+        "DEFAULT_INIT_TIMEOUT constant missing — needed for configurable init timeout"
+    )
+    assert wrapper_mod.DEFAULT_INIT_TIMEOUT >= 120.0, (
+        f"DEFAULT_INIT_TIMEOUT={getattr(wrapper_mod, 'DEFAULT_INIT_TIMEOUT', 'MISSING')!r} "
+        "must be >= 120s to survive profile MCP-server loading"
+    )
+
+
+def test_default_session_timeout_constant_exists(wrapper_mod):
+    """DEFAULT_SESSION_TIMEOUT module constant must exist and be >= 60s."""
+    assert hasattr(wrapper_mod, "DEFAULT_SESSION_TIMEOUT"), (
+        "DEFAULT_SESSION_TIMEOUT constant missing — needed for configurable session/new timeout"
+    )
+    assert wrapper_mod.DEFAULT_SESSION_TIMEOUT >= 60.0, (
+        f"DEFAULT_SESSION_TIMEOUT={getattr(wrapper_mod, 'DEFAULT_SESSION_TIMEOUT', 'MISSING')!r} "
+        "must be >= 60s"
+    )
+
+
+def test_resolve_init_timeout_exists(wrapper_mod):
+    """_resolve_init_timeout helper must exist."""
+    assert hasattr(wrapper_mod, "_resolve_init_timeout"), (
+        "_resolve_init_timeout() missing — wrapper needs this to read RALPH_ACP_INIT_TIMEOUT"
+    )
+
+
+def test_resolve_init_timeout_from_canonical_env(wrapper_mod):
+    """RALPH_ACP_INIT_TIMEOUT=180 → 180.0."""
+    val = wrapper_mod._resolve_init_timeout({"RALPH_ACP_INIT_TIMEOUT": "180"})
+    assert val == 180.0, f"expected 180.0, got {val!r}"
+
+
+def test_resolve_init_timeout_from_legacy_env(wrapper_mod):
+    """RALPH_HERMES_ACP_INIT_TIMEOUT=200 (deprecated) → 200.0 (backward compat)."""
+    val = wrapper_mod._resolve_init_timeout({"RALPH_HERMES_ACP_INIT_TIMEOUT": "200"})
+    assert val == 200.0, f"legacy env should still work, got {val!r}"
+
+
+def test_resolve_init_timeout_canonical_wins_over_legacy(wrapper_mod):
+    """When both envs set, canonical RALPH_ACP_* wins."""
+    env = {"RALPH_ACP_INIT_TIMEOUT": "150", "RALPH_HERMES_ACP_INIT_TIMEOUT": "200"}
+    val = wrapper_mod._resolve_init_timeout(env)
+    assert val == 150.0, f"canonical should win, got {val!r}"
+
+
+def test_resolve_init_timeout_default_when_unset(wrapper_mod):
+    """No env set → DEFAULT_INIT_TIMEOUT (>=120s)."""
+    val = wrapper_mod._resolve_init_timeout({})
+    assert val == wrapper_mod.DEFAULT_INIT_TIMEOUT, (
+        f"expected default {wrapper_mod.DEFAULT_INIT_TIMEOUT}, got {val!r}"
+    )
+
+
+def test_resolve_init_timeout_garbage_falls_back(wrapper_mod):
+    """Non-numeric env → default (fail-soft, never crash the loop)."""
+    val = wrapper_mod._resolve_init_timeout({"RALPH_ACP_INIT_TIMEOUT": "garbage"})
+    assert val == wrapper_mod.DEFAULT_INIT_TIMEOUT
+
+
+def test_resolve_session_timeout_exists(wrapper_mod):
+    """_resolve_session_timeout helper must exist."""
+    assert hasattr(wrapper_mod, "_resolve_session_timeout"), (
+        "_resolve_session_timeout() missing — wrapper needs this for session/new + auth"
+    )
+
+
+def test_resolve_session_timeout_from_env(wrapper_mod):
+    val = wrapper_mod._resolve_session_timeout({"RALPH_ACP_SESSION_TIMEOUT": "90"})
+    assert val == 90.0
+
+
+def test_resolve_session_timeout_legacy_env(wrapper_mod):
+    val = wrapper_mod._resolve_session_timeout({"RALPH_HERMES_ACP_SESSION_TIMEOUT": "80"})
+    assert val == 80.0
+
+
+def test_resolve_session_timeout_default(wrapper_mod):
+    val = wrapper_mod._resolve_session_timeout({})
+    assert val == wrapper_mod.DEFAULT_SESSION_TIMEOUT
+
+
+def test_resolve_session_timeout_garbage_falls_back(wrapper_mod):
+    val = wrapper_mod._resolve_session_timeout({"RALPH_ACP_SESSION_TIMEOUT": "abc"})
+    assert val == wrapper_mod.DEFAULT_SESSION_TIMEOUT

@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Ralph wrapper for hermes (non-ACP oneshot mode)
+#
+# Translates Ralph's generic wrapper args into hermes's oneshot CLI.
+# Hermes non-interactive mode is `-z` (oneshot prompt), NOT `chat -q -Q`
+# (which buffers the entire response and trips ralph's pre-start stall
+# detector). For streaming + <promise> extraction, ralph should use the
+# ACP transport (ralph-hermes-acp / ralph-acp) instead.
+#
+# Ralph calls: <command> [ralph flags] <prompt> [-- <extra>]
+#   --model X            -> -m X (hermes global)
+#   --full-auto          -> --yolo (hermes global)
+#   -p <profile>         -> -p <profile> (hermes global, profile selection)
+#   --profile=<name>     -> --profile=<name>
+#   --                   -> everything after is forwarded to hermes
+
+set -euo pipefail
+
+model=""
+prompt=()
+extra=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model)
+      model="$2"
+      shift 2
+      ;;
+    --full-auto)
+      # Map to --yolo (hermes auto-approve flag)
+      extra+=("--yolo")
+      shift
+      ;;
+    -p|--profile)
+      extra+=("$1" "$2")
+      shift 2
+      ;;
+    --profile=*)
+      extra+=("$1")
+      shift
+      ;;
+    --)
+      shift
+      extra+=("$@")
+      break
+      ;;
+    *)
+      prompt+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ ${#prompt[@]} -eq 0 ]]; then
+  echo "ralph-hermes: no prompt provided" >&2
+  exit 2
+fi
+
+prompt_text="${prompt[*]}"
+
+# Build command: hermes [global flags] -z <prompt>
+# -z is hermes oneshot/non-interactive mode. Global flags (-m, -p, --yolo)
+# appear before -z so argparse binds them to hermes, not to the prompt.
+cmd=(hermes)
+[[ -n "$model" ]] && cmd+=(-m "$model")
+[[ ${#extra[@]} -gt 0 ]] && cmd+=("${extra[@]}")
+cmd+=(-z "$prompt_text")
+
+exec "${cmd[@]}"

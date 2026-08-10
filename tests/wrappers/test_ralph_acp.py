@@ -264,3 +264,87 @@ def test_heartbeat_emitted_during_silence(tmp_path):
         f"expected ≥1 heartbeat during silence, got {len(heartbeat_lines)}. "
         f"stderr={result.stderr!r}"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Configurable init timeout (RED — subprocess test with slow mock)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_slow_initialize_succeeds_with_configured_timeout(tmp_path):
+    """35s initialize delay should succeed when RALPH_ACP_INIT_TIMEOUT=60.
+    
+    Simulates hermes acp -p <profile> loading MCP servers with retry backoff.
+    Without this fix, the wrapper times out at 30s hardcoded. With the fix,
+    the timeout is env-driven and ralph can survive slow init.
+    """
+    events = [
+        {"type": "notification", "delay": 0.1, "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "done\n"},
+        }},
+        {"type": "response", "delay": 0.1, "result": {"stopReason": "end_turn", "usage": {}}},
+    ]
+    env = _env(tmp_path, events)
+    # Mock initialize takes 35s (exceeds old 30s hardcoded timeout)
+    env["MOCK_INIT_DELAY"] = "35"
+    # New env-driven timeout = 60s (should succeed)
+    env["RALPH_ACP_INIT_TIMEOUT"] = "60"
+    result = _run_wrapper("hi", env, timeout=90)
+    assert result.returncode == 0, (
+        f"wrapper should succeed with 60s timeout when init takes 35s. "
+        f"stderr: {result.stderr}"
+    )
+    # Verify initialize actually happened (wasn't skipped)
+    log = _read_log(env)
+    methods = [e["method"] for e in log if e.get("kind") == "request"]
+    assert "initialize" in methods, f"initialize request missing in log: {log}"
+
+
+def test_slow_initialize_times_out_when_env_too_short(tmp_path):
+    """35s initialize delay FAILS when RALPH_ACP_INIT_TIMEOUT=10 (too short)."""
+    events = []  # Won't reach prompt phase
+    env = _env(tmp_path, events)
+    env["MOCK_INIT_DELAY"] = "35"
+    env["RALPH_ACP_INIT_TIMEOUT"] = "10"  # Way too short
+    result = _run_wrapper("hi", env, timeout=60)
+    assert result.returncode != 0, "should time out when init_timeout < init_delay"
+    assert "timeout waiting for response to initialize" in result.stderr
+
+
+def test_profile_flag_forwarded_to_binary(tmp_path):
+    """Verify -p <profile> reaches the spawned binary (hermes needs it before 'acp' subcommand).
+    
+    The wrapper extracts -p from passthrough args and injects it into the spawn
+    command as a GLOBAL flag before the subcommand: `hermes -p prof acp`.
+    """
+    events = [
+        {"type": "notification", "delay": 0.05, "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "ok\n"},
+        }},
+        {"type": "response", "delay": 0.05, "result": {"stopReason": "end_turn", "usage": {}}},
+    ]
+    env = _env(tmp_path, events)
+    # Mock captures its argv
+    env["MOCK_CAPTURE_ARGS"] = "1"
+    # Invoke wrapper with -p after -- (ralph injects passthrough flags before prompt)
+    result = subprocess.run(
+        [str(WRAPPER), "do task", "-p", "test-profile"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    log = _read_log(env)
+    # Find the raw_args event
+    args_events = [e for e in log if e.get("kind") == "raw_args"]
+    assert len(args_events) == 1, f"expected 1 raw_args log event, got {len(args_events)}"
+    raw_args = args_events[0]["args"]
+    # The mock is invoked as: python3 /path/to/mock_acp_server.py
+    # If wrapper forwarded -p correctly, argv should contain ["-p", "test-profile"]
+    assert "-p" in raw_args, f"-p missing in mock argv: {raw_args}"
+    p_idx = raw_args.index("-p")
+    assert p_idx + 1 < len(raw_args), "profile value missing after -p"
+    assert raw_args[p_idx + 1] == "test-profile", (
+        f"expected profile 'test-profile', got {raw_args[p_idx+1]!r}"
+    )
