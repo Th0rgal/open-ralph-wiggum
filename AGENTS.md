@@ -218,6 +218,13 @@ This project is indexed by GitNexus as **open-ralph-wiggum** (3779 symbols, 5221
 
 <!-- gitnexus:end -->
 
+## Flow Documentation
+
+Project knowledge captured in `flow/`:
+
+- **Intentions**: `flow/intentions/2026-07-03_openspec-schema-management.md` — OpenSpec schema management requirements
+- **Findings**: `flow/findings/2026-07-03_openspec-schema-variants.md` — Schema variants research & archive/sync behavior
+
 ## Lifecycle Hooks Architecture
 
 The hooks system (`src/lifecycle-hooks.ts`) enables bash-based extensibility at 9 lifecycle events with pipeline context support.

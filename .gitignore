@@ -147,3 +147,13 @@ goals/
 
 # ── Compiled binary (untracked; .js source stays tracked) ──
 bin/ralph
+
+# IDE / agent tool configs (per-machine, not source)
+.agent/
+.claude/
+.codex/
+.gemini/
+
+# Test run timestamp (ephemeral)
+.test-last-run
+.coverage
