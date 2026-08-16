@@ -218,6 +218,13 @@ This project is indexed by GitNexus as **open-ralph-wiggum** (3779 symbols, 5221
 
 <!-- gitnexus:end -->
 
+## Flow Documentation
+
+Project knowledge captured in `flow/`:
+
+- **Intentions**: `flow/intentions/2026-07-03_openspec-schema-management.md` — OpenSpec schema management requirements
+- **Findings**: `flow/findings/2026-07-03_openspec-schema-variants.md` — Schema variants research & archive/sync behavior
+
 ## Lifecycle Hooks Architecture
 
 The hooks system (`src/lifecycle-hooks.ts`) enables bash-based extensibility at 9 lifecycle events with pipeline context support.
@@ -233,8 +240,16 @@ The hooks system (`src/lifecycle-hooks.ts`) enables bash-based extensibility at 
 - Two scopes: global (`~/.config/open-ralph-wiggum/hooks/<event>/`) and local (`.ralph/hooks/<event>/`)
 - Priority ordering: ascending number, local-before-global for ties
 - Collision detection: same priority within same scope = fatal error at load
-- Execution: `spawnSync("bash", [hookPath])` with 30s timeout, output prefixed with `[hook:<name>]`
+- Execution: `spawnSync("bash", [hookPath])` with a per-hook timeout (default 30000ms), output prefixed with `[hook:<name>]`
 - Failures: logged as warnings, never block the loop
+
+**Hook timeout (configurable):**
+- `ExecuteHooksOptions.hookTimeoutMs?: number` carries the resolved per-run cap into `executeHooks` / `runHook`.
+- Default: `DEFAULT_HOOK_TIMEOUT_MS = 30000` (exported from `src/lifecycle-hooks.ts`).
+- Resolver `resolveHookTimeoutMs(cliFlag)` lives in `src/runtime-config.ts` (per design D2 — env/CLI resolution belongs to the runtime config layer, not the engine).
+- Priority (first valid wins): CLI flag `--hook-timeout <ms>` → env `RALPH_HOOK_TIMEOUT_MS` → default 30000.
+- Bad CLI flag throws (fail loud); bad env warns + falls back to default (fail soft).
+- On timeout the hook is killed and `[hook:<priority>-<name>] timed out after <ms>ms` is logged (fail-soft, loop continues). Detection uses `error.code === "ETIMEDOUT"` from spawnSync with an elapsed-time fallback.
 
 **Pipeline Context:**
 - Middleware-style data flow through hooks
@@ -246,4 +261,4 @@ The hooks system (`src/lifecycle-hooks.ts`) enables bash-based extensibility at 
 
 **Events:** `loop-start`, `loop-end`, `iteration-start`, `iteration-end`, `loop-resume`, `loop-abort`, `loop-stall`, `loop-error`, `loop-cancel`
 
-**CLI:** `ralph hooks list [--event <name>]`, `ralph hooks events`, `ralph pipeline show|clear`, `--no-hooks` flag
+**CLI:** `ralph hooks list [--event <name>]`, `ralph hooks events`, `ralph pipeline show|clear`, `--no-hooks` flag, `--hook-timeout <ms>` flag, `RALPH_HOOK_TIMEOUT_MS` env var
