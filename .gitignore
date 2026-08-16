@@ -157,3 +157,4 @@ bin/ralph
 # Test run timestamp (ephemeral)
 .test-last-run
 .coverage
+.pi-opa-net/
