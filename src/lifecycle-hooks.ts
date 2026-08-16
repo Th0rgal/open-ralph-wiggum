@@ -10,6 +10,29 @@ import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, unlinkS
 import { join } from "path";
 import { spawnSync } from "child_process";
 
+// `timeout` (GNU coreutils) is used to wrap hook execution so a hook that
+// traps SIGTERM can still be force-killed via SIGKILL escalation. Detected
+// once at module load; if absent we fall back to spawnSync's own timeout.
+const TIMEOUT_BIN_AVAILABLE: boolean = (() => {
+   try {
+      const r = spawnSync("timeout", ["--version"], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+      return r.status === 0 || (r.error === undefined);
+   } catch {
+      return false;
+   }
+})();
+
+/** Grace period (ms) after SIGTERM before escalating to SIGKILL. Capped at
+ * 10% of the hook timeout so short timeouts aren't dominated by grace. */
+const MIN_SIGKILL_GRACE_MS = 100;
+const MAX_SIGKILL_GRACE_MS = 2000;
+function sigkillGraceMs(hookTimeoutMs: number): number {
+   const grace = Math.floor(hookTimeoutMs * 0.1);
+   if (grace < MIN_SIGKILL_GRACE_MS) return MIN_SIGKILL_GRACE_MS;
+   if (grace > MAX_SIGKILL_GRACE_MS) return MAX_SIGKILL_GRACE_MS;
+   return grace;
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 /** All lifecycle events that can trigger hooks */
@@ -375,7 +398,7 @@ export function executeHooks(options: ExecuteHooksOptions): PipelineContext {
 
    if (hooks.length === 0) return pipelineContext;
 
-   const hookTimeoutMs = options.hookTimeoutMs || DEFAULT_HOOK_TIMEOUT_MS;
+   const hookTimeoutMs = options.hookTimeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
 
    for (const hook of hooks) {
       pipelineContext = runHook(hook, env, cwd, pipelineContext, hookTimeoutMs, verbose);
@@ -424,13 +447,34 @@ function runHook(
 
    try {
       const hookStart = performance.now();
-      const result = spawnSync("bash", [hook.filePath], {
-         cwd,
-         env: hookEnv,
-         encoding: "utf-8",
-         timeout: hookTimeoutMs,
-         killSignal: "SIGKILL",
-      });
+
+      // Wrap the hook in `timeout` (GNU coreutils) so a hook that traps
+      // SIGTERM can still be force-killed. Flow: `timeout` sends SIGTERM at
+      // hookTimeoutMs, then SIGKILL after grace if the process is still
+      // alive. spawnSync still carries its own (timeout + grace + buffer) as
+      // a final safety net in case `timeout` itself misbehaves.
+      const graceMs = sigkillGraceMs(hookTimeoutMs);
+      // `timeout` takes fractional seconds; convert ms → s.
+      const timeoutSec = hookTimeoutMs / 1000;
+      const graceSec = graceMs / 1000;
+      // spawnSync safety net: total wall clock before we give up on the
+      // wrapper itself. Generous to avoid racing the escalation.
+      const spawnTimeoutMs = hookTimeoutMs + graceMs + 1000;
+
+      let result;
+      if (TIMEOUT_BIN_AVAILABLE) {
+         result = spawnSync(
+            "timeout",
+            ["-s", "TERM", "-k", String(graceSec), String(timeoutSec), "bash", hook.filePath],
+            { cwd, env: hookEnv, encoding: "utf-8", timeout: spawnTimeoutMs }
+         );
+      } else {
+         // Fallback: no escalation. Hook that traps SIGTERM may hang up to
+         // spawnTimeoutMs. Logged so operators know escalation is inactive.
+         result = spawnSync("bash", [hook.filePath], {
+            cwd, env: hookEnv, encoding: "utf-8", timeout: hookTimeoutMs,
+         });
+      }
       const elapsed = performance.now() - hookStart;
 
       // D5: parse pipeline context from BOTH stdout and stderr. Spec requires
@@ -474,14 +518,18 @@ function runHook(
          console.warn(`${prefix} exited with code ${result.status}`);
       }
 
-      // Handle signal termination. spawnSync sends killSignal (SIGKILL) on
-      // timeout, which cannot be trapped — so a hook that ignores SIGTERM
-      // cannot hang Ralph. On timeout spawnSync also sets error.code=ETIMEDOUT
-      // (Node >=14); that is the authoritative signal. The elapsed heuristic is
-      // a defensive fallback ONLY when error is absent (Bun edge cases),
+      // Handle signal termination. Two escalation paths produce a timeout:
+      //  1. Hook handled SIGTERM gracefully and exited  → `timeout` exits 124.
+      //  2. Hook trapped SIGTERM → escalated to SIGKILL → spawnSync sees
+      //     signal === 'SIGKILL' (the untrappable signal).
+      // spawnSync's own ETIMEDOUT fires only if `timeout` itself hung past
+      // the safety-net spawnTimeoutMs (shouldn't happen, but logged).
+      // Elapsed heuristic is a defensive fallback ONLY when error is absent,
       // guarded so a very small hookTimeoutMs (<50ms) doesn't make the
       // threshold negative and thus always-true.
-      if (result.signal) {
+      if (result.status === 124 || result.signal === "SIGKILL") {
+         console.warn(`${prefix} timed out after ${hookTimeoutMs}ms`);
+      } else if (result.signal) {
          const errCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
          const elapsedHeuristicOK = hookTimeoutMs > 50 && elapsed >= hookTimeoutMs - 50;
          const timedOut = errCode === "ETIMEDOUT" ||

@@ -14,12 +14,52 @@ RALPH_BIN="${1:-$HOME/.local/bin/ralph-dev.js}"
 RED='\033[0;31m'; GREEN='\033[0;32m'; NC='\033[0m'
 PASS=0; FAIL=0
 
-check() {
-   local name="$1"; shift
-   if "$@" >/dev/null 2>&1; then
-      printf "${GREEN}✓${NC} %s\n" "$name"; PASS=$((PASS + 1))
+record_pass() { printf "${GREEN}✓${NC} %s\n" "$1"; PASS=$((PASS + 1)); }
+record_fail() { printf "${RED}✗${NC} %s\n" "$1"; FAIL=$((FAIL + 1)); }
+
+# Run ralph and assert its combined stdout+stderr contains a literal substring.
+# Args: <description> <substring> [ralph args...]
+expect_output_contains() {
+   local desc="$1"; local needle="$2"; shift 2
+   local out
+   out="$("$RALPH_BIN" "$@" 2>&1 || true)"
+   if printf '%s' "$out" | grep -qF -- "$needle"; then
+      record_pass "$desc"
    else
-      printf "${RED}✗${NC} %s\n" "$name"; FAIL=$((FAIL + 1))
+      record_fail "$desc"
+   fi
+}
+
+# Run ralph and assert its combined stdout+stderr does NOT contain a substring.
+# Args: <description> <substring> [ralph args...]
+expect_output_lacks() {
+   local desc="$1"; local needle="$2"; shift 2
+   local out
+   out="$("$RALPH_BIN" "$@" 2>&1 || true)"
+   if printf '%s' "$out" | grep -qF -- "$needle"; then
+      record_fail "$desc"
+   else
+      record_pass "$desc"
+   fi
+}
+
+# Run ralph and assert it exits zero. Args: <description> [ralph args...]
+expect_ok() {
+   local desc="$1"; shift
+   if "$RALPH_BIN" "$@" >/dev/null 2>&1; then
+      record_pass "$desc"
+   else
+      record_fail "$desc"
+   fi
+}
+
+# Run ralph and assert it exits NON-zero. Args: <description> [ralph args...]
+expect_fail() {
+   local desc="$1"; shift
+   if "$RALPH_BIN" "$@" >/dev/null 2>&1; then
+      record_fail "$desc"
+   else
+      record_pass "$desc"
    fi
 }
 
@@ -34,25 +74,26 @@ if [[ ! -x "$RALPH_BIN" ]]; then
 fi
 
 # 1. Basic invocation
-check "ralph --version" "$RALPH_BIN" --version
+expect_ok   "ralph --version"             --version
+expect_ok   "ralph hooks list runs"       hooks list
+expect_ok   "ralph hooks events runs"     hooks events
 
-# 2. Help advertises hooks features
-check "ralph --help mentions --no-hooks"      bash -c "'$RALPH_BIN' --help 2>&1 | grep -q -- '--no-hooks'"
-check "ralph --help mentions --verbose-hooks" bash -c "'$RALPH_BIN' --help 2>&1 | grep -q -- '--verbose-hooks'"
-check "ralph --help mentions --hook-timeout"  bash -c "'$RALPH_BIN' --help 2>&1 | grep -q -- '--hook-timeout'"
+# 2. Help advertises hooks features (direct grep, no bash -c interpolation)
+expect_output_contains "ralph --help mentions --no-hooks"      "--no-hooks"      --help
+expect_output_contains "ralph --help mentions --verbose-hooks" "--verbose-hooks" --help
+expect_output_contains "ralph --help mentions --hook-timeout"  "--hook-timeout"  --help
 
-# 3. Hooks CLI commands
-check "ralph hooks list runs"   "$RALPH_BIN" hooks list
-check "ralph hooks events runs" "$RALPH_BIN" hooks events
+# 3. Configurable timeout: bad CLI flag rejected (non-zero exit)
+expect_fail "--hook-timeout abc rejected (non-zero exit)" noop --hook-timeout abc
 
-# 4. Configurable timeout: bad CLI flag rejected (non-zero exit)
-check "--hook-timeout abc rejected (non-zero exit)" bash -c "! '$RALPH_BIN' noop --hook-timeout abc >/dev/null 2>&1"
+# 4. Configurable timeout: bad env warns + falls back. Assert the warn line
+#    appears (ralph may exit non-zero later for other reasons, e.g. no agent).
+#    Env var is exported so the subprocess inherits it.
+export RALPH_HOOK_TIMEOUT_MS=abc
+expect_output_contains "RALPH_HOOK_TIMEOUT_MS=abc warns" "RALPH_HOOK_TIMEOUT_MS" noop --max-iterations 1 --no-commit
+unset RALPH_HOOK_TIMEOUT_MS
 
-# 5. Configurable timeout: bad env warns + falls back
-#    Assert the warn line appears; ralph may exit non-zero later for other reasons (no agent).
-check "RALPH_HOOK_TIMEOUT_MS=abc warns" bash -c "RALPH_HOOK_TIMEOUT_MS=abc '$RALPH_BIN' noop --max-iterations 1 --no-commit 2>&1 | grep -q 'RALPH_HOOK_TIMEOUT_MS'"
-
-# 6. Hook discovery: create a temp project with a loop-start hook and verify
+# 5. Hook discovery: create a temp project with a loop-start hook and verify
 #    `ralph hooks list` (run from that dir via cd — ralph has no --cwd flag)
 #    discovers it. No agent needed.
 SMOKE_DIR="$(mktemp -d)"
@@ -64,14 +105,17 @@ echo "SMOKE_HOOK_FIRED"
 HOOK
 chmod +x "$SMOKE_DIR/.ralph/hooks/loop-start/10-smoke.sh"
 
-if (cd "$SMOKE_DIR" && "$RALPH_BIN" hooks list 2>&1 | grep -q "10-smoke"); then
-   printf "${GREEN}✓${NC} %s\n" "loop-start hook discovered via ralph hooks list"; PASS=$((PASS + 1))
+if (cd "$SMOKE_DIR" && "$RALPH_BIN" hooks list 2>&1 | grep -qF "10-smoke"); then
+   record_pass "loop-start hook discovered via ralph hooks list"
 else
-   printf "${RED}✗${NC} %s\n" "loop-start hook discovered via ralph hooks list"; FAIL=$((FAIL + 1))
+   record_fail "loop-start hook discovered via ralph hooks list"
 fi
 
-# 7. --no-hooks bypass is accepted (parse-level; exit code irrelevant beyond parse)
-check "--no-hooks flag accepted at parse" bash -c "'$RALPH_BIN' noop --no-hooks --max-iterations 1 --no-commit 2>&1 | grep -qi 'hooks' || true; '$RALPH_BIN' --help 2>&1 | grep -q -- '--no-hooks'"
+# 6. --no-hooks bypass is accepted at parse level. We assert the binary does
+#    NOT reject the flag at parse (no "Unknown option: --no-hooks"). The run
+#    may still exit non-zero for agent reasons, so we check the absence of the
+#    parse-error string rather than the exit code.
+expect_output_lacks "--no-hooks accepted at parse (no 'Unknown option')" "Unknown option: --no-hooks" noop --no-hooks --max-iterations 1 --no-commit
 
 echo
 echo "── result: ${GREEN}$PASS passed${NC}, ${RED}$FAIL failed${NC} ──"

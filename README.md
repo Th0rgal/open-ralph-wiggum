@@ -576,6 +576,26 @@ if [ "$RALPH_END_REASON" = "completion" ]; then
 fi
 ```
 
+#### Hook Timeout
+
+Each hook has a per-run execution timeout. Default is `30000`ms (30s). Override via:
+
+- CLI flag: `--hook-timeout <ms>` (highest priority; invalid value → hard error)
+- Env var: `RALPH_HOOK_TIMEOUT_MS=<ms>` (invalid value → warn + fall back to default)
+
+```bash
+# Raise cap to 5 minutes
+ralph "deploy hook" --hook-timeout 300000
+
+# Same via env
+RALPH_HOOK_TIMEOUT_MS=300000 ralph "deploy hook"
+
+# Tighten to 10s
+ralph "quick check" --hook-timeout 10000
+```
+
+Timeout expiration is fail-soft: the hook is killed, a `[hook:<priority>-<name>] timed out after <ms>ms` warning is logged, and the loop continues. Sane upper bound: ≤300000 (5 min); for longer work use `pueue add`/external supervisor and exit the hook fast.
+
 #### CLI Commands
 
 ```bash

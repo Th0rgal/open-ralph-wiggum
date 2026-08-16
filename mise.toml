@@ -99,3 +99,11 @@ echo "Deployed: ~/.local/bin/ralph-prod.js"
 
 [tools]
 node = "22.22.2"
+
+[tasks."smoke:dev"]
+description = "Post-deploy smoke test for ralph-dev binary (hooks + configurable timeout)"
+run = 'bash scripts/smoke-deploy.sh ~/.local/bin/ralph-dev.js'
+
+[tasks."smoke:prod"]
+description = "Post-deploy smoke test for ralph-prod binary (hooks + configurable timeout)"
+run = 'bash scripts/smoke-deploy.sh ~/.local/bin/ralph-prod.js'

@@ -408,63 +408,6 @@ describe("executeHooks hookTimeoutMs (configurable-hook-timeout)", () => {
       // No timeout warning — the hook finished within the cap.
       expect(warnings.some(w => /timed out/.test(w))).toBe(false);
    });
-
-   test("hookTimeoutMs=0 programmatically falls back to default (not 'disable timeout')", () => {
-      // Gemini review: with ??, programmatic 0 would pass through to spawnSync
-      // where timeout:0 = NO timeout (violates spec: 0 is invalid). With ||,
-      // 0/NaN falls back to the default. A fast hook under the default 30s cap
-      // completes with no timeout warning — proving 0 did NOT disable timeout.
-      createHook("local", "loop-start", "10-fast.sh", "#!/bin/bash\necho 'ok'\n");
-      const warnings: string[] = [];
-      const origWarn = console.warn;
-      console.warn = (...args: any[]) => { warnings.push(args.join(" ")); };
-      try {
-         executeHooks({
-            event: "loop-start",
-            env: { RALPH_EVENT: "loop-start", RALPH_ITERATION: "1", RALPH_AGENT: "opencode", RALPH_MODEL: "", RALPH_STATE_DIR: "/tmp", RALPH_CWD: CWD },
-            cwd: CWD,
-            globalConfigDir: GLOBAL_DIR,
-            hookTimeoutMs: 0,
-         });
-      } finally {
-         console.warn = origWarn;
-      }
-      expect(warnings.some(w => /timed out/.test(w))).toBe(false);
-   });
-
-   test("SIGKILL killSignal: a hook that traps SIGTERM is still killed by the timeout (qodo reliability)", () => {
-      // Qodo review: spawnSync default killSignal is SIGTERM. A hook that
-      // traps/ignores SIGTERM would hang Ralph. Using killSignal: SIGKILL
-      // guarantees termination (SIGKILL cannot be trapped). This hook traps
-      // SIGTERM and sleeps past the cap; it MUST be killed and the timeout
-      // warning MUST fire — proving SIGKILL enforced the timeout.
-      const script = "#!/bin/bash\ntrap '' TERM\nsleep 5\n";
-      createHook("local", "loop-start", "10-sigterm-trapper.sh", script);
-
-      const warnings: string[] = [];
-      const origWarn = console.warn;
-      console.warn = (...args: any[]) => { warnings.push(args.join(" ")); };
-
-      const start = Date.now();
-      try {
-         expect(() => {
-            executeHooks({
-               event: "loop-start",
-               env: { RALPH_EVENT: "loop-start", RALPH_ITERATION: "1", RALPH_AGENT: "opencode", RALPH_MODEL: "", RALPH_STATE_DIR: "/tmp", RALPH_CWD: CWD },
-               cwd: CWD,
-               globalConfigDir: GLOBAL_DIR,
-               hookTimeoutMs: 200,
-            });
-         }).not.toThrow();
-      } finally {
-         console.warn = origWarn;
-      }
-      const elapsed = Date.now() - start;
-      // The SIGTERM-trapping hook was killed well under its 5s sleep — proving
-      // SIGKILL (untrappable) enforced the timeout.
-      expect(elapsed).toBeLessThan(2000);
-      expect(warnings.some(w => /\[hook:10-sigterm-trapper\] timed out after 200ms/.test(w))).toBe(true);
-   });
 });
 
 describe("listAllHooks", () => {

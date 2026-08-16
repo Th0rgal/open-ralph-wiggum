@@ -1244,7 +1244,7 @@ function executeHooks(options) {
   }
   if (hooks.length === 0)
     return pipelineContext;
-  const hookTimeoutMs = options.hookTimeoutMs || DEFAULT_HOOK_TIMEOUT_MS;
+  const hookTimeoutMs = options.hookTimeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
   for (const hook of hooks) {
     pipelineContext = runHook(hook, env, cwd, pipelineContext, hookTimeoutMs, verbose);
   }
@@ -1283,8 +1283,7 @@ function runHook(hook, env, cwd, pipelineContext, hookTimeoutMs, verbose) {
       cwd,
       env: hookEnv,
       encoding: "utf-8",
-      timeout: hookTimeoutMs,
-      killSignal: "SIGKILL"
+      timeout: hookTimeoutMs
     });
     const elapsed = performance.now() - hookStart;
     let updatedContext = pipelineContext;
@@ -1322,7 +1321,7 @@ function runHook(hook, env, cwd, pipelineContext, hookTimeoutMs, verbose) {
     if (result.signal) {
       const errCode = result.error?.code;
       const elapsedHeuristicOK = hookTimeoutMs > 50 && elapsed >= hookTimeoutMs - 50;
-      const timedOut = errCode === "ETIMEDOUT" || result.error === undefined && elapsedHeuristicOK;
+      const timedOut = result.signal === "SIGTERM" && (errCode === "ETIMEDOUT" || elapsedHeuristicOK);
       if (timedOut) {
         console.warn(`${prefix} timed out after ${hookTimeoutMs}ms`);
       } else {
