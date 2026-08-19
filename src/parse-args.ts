@@ -129,6 +129,7 @@ export interface ParsedMainArgs {
    reuseState: boolean;
    extraAgentFlags: string[];
    passthroughAgentFlags: string[];
+   agentBinary: string;
    promptParts: string[];
    maxIterationsProvided: boolean;
    minIterationsProvided: boolean;
@@ -175,6 +176,7 @@ export function getDefaultMainArgs(): ParsedMainArgs {
       reuseState: false,
       extraAgentFlags: [],
       passthroughAgentFlags: [],
+      agentBinary: "",
       promptParts: [],
       maxIterationsProvided: false,
       minIterationsProvided: false,
@@ -195,6 +197,7 @@ export function getDefaultMainArgs(): ParsedMainArgs {
 export function applyTomlConfig(result: ParsedMainArgs, config: RalphRuntimeConfig): void {
    if (config.prompt) result.prompt = config.prompt;
    if (config.agent) result.agentType = config.agent;
+   if (config.agent_binary) result.agentBinary = config.agent_binary;
    if (config.min_iterations !== undefined) result.minIterations = config.min_iterations;
    if (config.max_iterations !== undefined) result.maxIterations = config.max_iterations;
    if (config.completion_promise) result.completionPromise = config.completion_promise;
@@ -265,6 +268,12 @@ export function parseMainArgs(args: string[], validAgents: string[]): ParsedMain
             throw new Error(`--agent requires one of: ${validAgents.join(", ")}`);
          }
          result.agentType = val as AgentType;
+      } else if (arg === "--agent-binary") {
+         const val = args[++i];
+         if (!val) {
+            throw new Error("--agent-binary requires a path or binary name");
+         }
+         result.agentBinary = val;
       } else if (arg === "--min-iterations") {
          const val = args[++i];
          if (!val || isNaN(parseInt(val))) {

@@ -37,6 +37,7 @@ export interface RalphConfig {
 export interface RalphRuntimeConfig {
    prompt?: string;
    agent?: AgentType;
+   agent_binary?: string;
    min_iterations?: number;
    max_iterations?: number;
    completion_promise?: string;

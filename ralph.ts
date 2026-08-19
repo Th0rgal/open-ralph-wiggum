@@ -147,6 +147,7 @@ let stateDirInput = join(process.cwd(), ".ralph");
 export interface RalphRuntimeConfig {
    prompt?: string;
    agent?: AgentType;
+   agent_binary?: string;
    min_iterations?: number;
    max_iterations?: number;
    completion_promise?: string;
@@ -442,6 +443,12 @@ export function getDefaultTomlConfig(): string {
 # Agent to use: opencode (default), claude-code, codex, copilot, or any custom agent in agents.json
 # agent = "opencode"
 
+# Concrete binary for the selected agent (name resolved via PATH, or absolute path).
+# --agent is the interface/method (prompt template + parser), agent_binary is the executable.
+# Examples: agent_binary = "claude-stali"  or  agent_binary = "/home/bhd/bin/claude-stali"
+# Env RALPH_<TYPE>_BINARY still works; CLI --agent-binary has highest priority.
+# agent_binary = "claude-stali"
+
 # Minimum iterations before completion is allowed (default: 1)
 # min_iterations = 1
 
@@ -716,6 +723,7 @@ export function loadRuntimeTomlConfig(configPath: string, explicit: boolean): Ra
 
       config.prompt = normalizeRuntimeConfigValue("prompt", parsed.prompt, "string") as string | undefined;
       config.agent = normalizeRuntimeConfigValue("agent", parsed.agent, "string") as AgentType | undefined;
+      config.agent_binary = normalizeRuntimeConfigValue("agent_binary", parsed.agent_binary, "string") as string | undefined;
       config.min_iterations = normalizeRuntimeConfigValue("min_iterations", parsed.min_iterations, "number") as number | undefined;
       config.max_iterations = normalizeRuntimeConfigValue("max_iterations", parsed.max_iterations, "number") as number | undefined;
       config.completion_promise = normalizeRuntimeConfigValue("completion_promise", parsed.completion_promise, "string") as string | undefined;
@@ -1088,6 +1096,27 @@ export function getAgentBinaryEnvName(agentType: string): string {
 }
 
 /**
+ * Resolve agent binary with layered priority:
+ * CLI flag (--agent-binary) > RALPH_<TYPE>_BINARY env > built-in default.
+ * If the resolved token is not absolute, Bun.which is tried so bare names
+ * like "claude-stali" resolve via PATH.
+ */
+export function resolveAgentBinary(agentType: string, cliBinary?: string): string {
+   const envName = getAgentBinaryEnvName(agentType);
+   const envOverride = process.env[envName];
+   if (cliBinary) return resolveCommand(cliBinary);
+   if (envOverride) return envOverride;
+   const defaults: Record<string, string> = {
+      opencode: "opencode",
+      "claude-code": "claude",
+      codex: "codex",
+      copilot: "copilot",
+      "cursor-agent": "cursor-agent",
+   };
+   return resolveCommand(defaults[agentType] ?? agentType);
+}
+
+/**
  * Resolve a command for cross-platform compatibility.
  * On Windows, many npm-installed CLIs require the .cmd extension.
  */
@@ -1265,6 +1294,10 @@ Arguments:
 
 Options:
   --agent AGENT       AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent
+  --agent-binary PATH Binary for the selected agent (name resolved via PATH, or absolute path)
+                      e.g. --agent claude-code --agent-binary claude-stali
+                      e.g. --agent claude-code --agent-binary /home/bhd/bin/claude-stali
+                      Env fallback: RALPH_<TYPE>_BINARY (e.g. RALPH_CLAUDE_CODE_BINARY)
   --min-iterations N  Minimum iterations before completion allowed (default: 1)
   --max-iterations N  Maximum iterations before stopping (default: unlimited)
   --completion-promise TEXT  Phrase that signals completion (default: COMPLETE)
@@ -2347,6 +2380,7 @@ Learn more: https://ghuntley.com/ralph/
    let taskPromise = "READY_FOR_NEXT_TASK";
    let model = "";
    let agentType: AgentType = "opencode";
+   let agentBinary = "";
    let rotationInput = "";
    let rotation: string[] | null = null;
    let autoCommit = true;
@@ -2461,6 +2495,7 @@ Learn more: https://ghuntley.com/ralph/
    if (runtimeTomlConfig) {
       if (runtimeTomlConfig.prompt) prompt = runtimeTomlConfig.prompt;
       if (runtimeTomlConfig.agent) agentType = runtimeTomlConfig.agent;
+      if (runtimeTomlConfig.agent_binary) agentBinary = runtimeTomlConfig.agent_binary;
       if (runtimeTomlConfig.min_iterations !== undefined) minIterations = runtimeTomlConfig.min_iterations;
       if (runtimeTomlConfig.max_iterations !== undefined) maxIterations = runtimeTomlConfig.max_iterations;
       if (runtimeTomlConfig.completion_promise) completionPromise = runtimeTomlConfig.completion_promise;
@@ -2553,6 +2588,13 @@ Learn more: https://ghuntley.com/ralph/
             process.exit(1);
          }
          agentType = val as AgentType;
+      } else if (arg === "--agent-binary") {
+         const val = args[++i];
+         if (!val) {
+            console.error("Error: --agent-binary requires a path or binary name");
+            process.exit(1);
+         }
+         agentBinary = val;
       } else if (arg === "--min-iterations") {
          const val = args[++i];
          if (!val || isNaN(parseInt(val))) {
@@ -2812,6 +2854,15 @@ Learn more: https://ghuntley.com/ralph/
    } else if (!AGENTS[agentType]) {
       console.error(`Error: --agent requires one of: ${Object.keys(AGENTS).join(", ")}`);
       process.exit(1);
+   }
+
+   // Apply --agent-binary / agent_binary override for the selected agent.
+   // --agent = interface/method (prompt builder + parser), --agent-binary = concrete binary.
+   // Bare names (e.g. claude-stali) resolve via PATH; absolute paths used as-is.
+   if (agentBinary) {
+      const resolved = resolveCommand(agentBinary);
+      // Clone so built-ins remain reusable for rotation/status paths.
+      AGENTS[agentType] = { ...AGENTS[agentType], command: resolved };
    }
 
    function readPromptFile(path: string): string {

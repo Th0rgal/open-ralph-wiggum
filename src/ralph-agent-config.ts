@@ -133,6 +133,28 @@ export function getAgentBinaryEnvName(agentType: string): string {
   return `RALPH_${agentType.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_BINARY`;
 }
 
+/**
+ * Resolve agent binary with layered priority.
+ * CLI flag wins > env var > bare command name.
+ * If the resolved token contains a path separator it is treated as an
+ * absolute / relative path; otherwise Bun.which is used to resolve via PATH.
+ */
+export function resolveAgentBinary(agentType: string, cliBinary?: string): string {
+   const envName = getAgentBinaryEnvName(agentType);
+   const envOverride = process.env[envName];
+   if (cliBinary) return resolveCommand(cliBinary, undefined);
+   if (envOverride) return envOverride;
+   // fallback: default command name per agent type
+   const defaults: Record<string, string> = {
+      opencode: "opencode",
+      "claude-code": "claude",
+      codex: "codex",
+      copilot: "copilot",
+      "cursor-agent": "cursor-agent",
+   };
+   return resolveCommand(defaults[agentType] ?? agentType);
+}
+
 function resolveConfigRelativePath(baseFilePath: string, targetPath: string): string {
    if (!targetPath) return targetPath;
    return isAbsolute(targetPath) ? targetPath : resolve(dirname(baseFilePath), targetPath);

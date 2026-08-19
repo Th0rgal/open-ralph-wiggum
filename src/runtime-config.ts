@@ -99,6 +99,7 @@ export function loadRuntimeTomlConfig(configPath: string, explicit: boolean): Ra
 
       config.prompt = normalizeRuntimeConfigValue("prompt", parsed.prompt, "string") as string | undefined;
       config.agent = normalizeRuntimeConfigValue("agent", parsed.agent, "string") as AgentType | undefined;
+      config.agent_binary = normalizeRuntimeConfigValue("agent_binary", parsed.agent_binary, "string") as string | undefined;
       config.min_iterations = normalizeRuntimeConfigValue("min_iterations", parsed.min_iterations, "number") as number | undefined;
       config.max_iterations = normalizeRuntimeConfigValue("max_iterations", parsed.max_iterations, "number") as number | undefined;
       config.completion_promise = normalizeRuntimeConfigValue("completion_promise", parsed.completion_promise, "string") as string | undefined;
@@ -230,6 +231,12 @@ export function getDefaultTomlConfig(): string {
 
 # Agent to use: opencode (default), claude-code, codex, copilot, or any custom agent in agents.json
 # agent = "opencode"
+
+# Concrete binary for the selected agent (name resolved via PATH, or absolute path).
+# --agent is the interface/method (prompt template + parser), agent_binary is the executable.
+# Examples: agent_binary = "claude-stali"  or  agent_binary = "/home/bhd/bin/claude-stali"
+# Env RALPH_<TYPE>_BINARY still works; CLI --agent-binary has highest priority.
+# agent_binary = "claude-stali"
 
 # Minimum iterations before completion is allowed (default: 1)
 # min_iterations = 1
