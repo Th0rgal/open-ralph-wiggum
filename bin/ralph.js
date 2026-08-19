@@ -1080,6 +1080,24 @@ function validateReviewConfig(config) {
 import { existsSync as existsSync2, readdirSync, statSync, readFileSync as readFileSync3, writeFileSync as writeFileSync2, unlinkSync } from "fs";
 import { join } from "path";
 import { spawnSync } from "child_process";
+var TIMEOUT_BIN_AVAILABLE = (() => {
+  try {
+    const r = spawnSync("timeout", ["--version"], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+    return r.status === 0 || r.error === undefined;
+  } catch {
+    return false;
+  }
+})();
+var MIN_SIGKILL_GRACE_MS = 100;
+var MAX_SIGKILL_GRACE_MS = 2000;
+function sigkillGraceMs(hookTimeoutMs) {
+  const grace = Math.floor(hookTimeoutMs * 0.1);
+  if (grace < MIN_SIGKILL_GRACE_MS)
+    return MIN_SIGKILL_GRACE_MS;
+  if (grace > MAX_SIGKILL_GRACE_MS)
+    return MAX_SIGKILL_GRACE_MS;
+  return grace;
+}
 var LIFECYCLE_EVENTS = [
   "loop-start",
   "loop-end",
@@ -1279,12 +1297,21 @@ function runHook(hook, env, cwd, pipelineContext, hookTimeoutMs, verbose) {
   }
   try {
     const hookStart = performance.now();
-    const result = spawnSync("bash", [hook.filePath], {
-      cwd,
-      env: hookEnv,
-      encoding: "utf-8",
-      timeout: hookTimeoutMs
-    });
+    const graceMs = sigkillGraceMs(hookTimeoutMs);
+    const timeoutSec = hookTimeoutMs / 1000;
+    const graceSec = graceMs / 1000;
+    const spawnTimeoutMs = hookTimeoutMs + graceMs + 1000;
+    let result;
+    if (TIMEOUT_BIN_AVAILABLE) {
+      result = spawnSync("timeout", ["-s", "TERM", "-k", String(graceSec), String(timeoutSec), "bash", hook.filePath], { cwd, env: hookEnv, encoding: "utf-8", timeout: spawnTimeoutMs });
+    } else {
+      result = spawnSync("bash", [hook.filePath], {
+        cwd,
+        env: hookEnv,
+        encoding: "utf-8",
+        timeout: hookTimeoutMs
+      });
+    }
     const elapsed = performance.now() - hookStart;
     let updatedContext = pipelineContext;
     if (result.stdout) {
@@ -1318,10 +1345,12 @@ function runHook(hook, env, cwd, pipelineContext, hookTimeoutMs, verbose) {
     if (result.status !== 0) {
       console.warn(`${prefix} exited with code ${result.status}`);
     }
-    if (result.signal) {
+    if (result.status === 124 || result.signal === "SIGKILL") {
+      console.warn(`${prefix} timed out after ${hookTimeoutMs}ms`);
+    } else if (result.signal) {
       const errCode = result.error?.code;
       const elapsedHeuristicOK = hookTimeoutMs > 50 && elapsed >= hookTimeoutMs - 50;
-      const timedOut = result.signal === "SIGTERM" && (errCode === "ETIMEDOUT" || elapsedHeuristicOK);
+      const timedOut = errCode === "ETIMEDOUT" || result.error === undefined && elapsedHeuristicOK;
       if (timedOut) {
         console.warn(`${prefix} timed out after ${hookTimeoutMs}ms`);
       } else {
@@ -2217,6 +2246,12 @@ function getDefaultTomlConfig() {
 # Agent to use: opencode (default), claude-code, codex, copilot, or any custom agent in agents.json
 # agent = "opencode"
 
+# Concrete binary for the selected agent (name resolved via PATH, or absolute path).
+# --agent is the interface/method (prompt template + parser), agent_binary is the executable.
+# Examples: agent_binary = "claude-stali"  or  agent_binary = "/home/bhd/bin/claude-stali"
+# Env RALPH_<TYPE>_BINARY still works; CLI --agent-binary has highest priority.
+# agent_binary = "claude-stali"
+
 # Minimum iterations before completion is allowed (default: 1)
 # min_iterations = 1
 
@@ -2478,6 +2513,7 @@ function loadRuntimeTomlConfig(configPath, explicit) {
     const config = {};
     config.prompt = normalizeRuntimeConfigValue2("prompt", parsed.prompt, "string");
     config.agent = normalizeRuntimeConfigValue2("agent", parsed.agent, "string");
+    config.agent_binary = normalizeRuntimeConfigValue2("agent_binary", parsed.agent_binary, "string");
     config.min_iterations = normalizeRuntimeConfigValue2("min_iterations", parsed.min_iterations, "number");
     config.max_iterations = normalizeRuntimeConfigValue2("max_iterations", parsed.max_iterations, "number");
     config.completion_promise = normalizeRuntimeConfigValue2("completion_promise", parsed.completion_promise, "string");
@@ -2787,6 +2823,22 @@ ${next.join(`
 }
 function getAgentBinaryEnvName(agentType) {
   return `RALPH_${agentType.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_BINARY`;
+}
+function resolveAgentBinary(agentType, cliBinary) {
+  const envName = getAgentBinaryEnvName(agentType);
+  const envOverride = process.env[envName];
+  if (cliBinary)
+    return resolveCommand(cliBinary);
+  if (envOverride)
+    return envOverride;
+  const defaults = {
+    opencode: "opencode",
+    "claude-code": "claude",
+    codex: "codex",
+    copilot: "copilot",
+    "cursor-agent": "cursor-agent"
+  };
+  return resolveCommand(defaults[agentType] ?? agentType);
 }
 function resolveCommand(cmd, envOverride, basePath) {
   if (envOverride)
@@ -3579,6 +3631,10 @@ Arguments:
 
 Options:
   --agent AGENT       AI agent to use: opencode (default), claude-code, codex, copilot, cursor-agent
+  --agent-binary PATH Binary for the selected agent (name resolved via PATH, or absolute path)
+                      e.g. --agent claude-code --agent-binary claude-stali
+                      e.g. --agent claude-code --agent-binary /home/bhd/bin/claude-stali
+                      Env fallback: RALPH_<TYPE>_BINARY (e.g. RALPH_CLAUDE_CODE_BINARY)
   --min-iterations N  Minimum iterations before completion allowed (default: 1)
   --max-iterations N  Maximum iterations before stopping (default: unlimited)
   --completion-promise TEXT  Phrase that signals completion (default: COMPLETE)
@@ -4365,6 +4421,7 @@ ${newEntry}`);
   let taskPromise = "READY_FOR_NEXT_TASK";
   let model = "";
   let agentType = "opencode";
+  let agentBinary = "";
   let rotationInput = "";
   let rotation = null;
   let autoCommit = true;
@@ -4415,6 +4472,8 @@ ${newEntry}`);
       prompt = runtimeTomlConfig.prompt;
     if (runtimeTomlConfig.agent)
       agentType = runtimeTomlConfig.agent;
+    if (runtimeTomlConfig.agent_binary)
+      agentBinary = runtimeTomlConfig.agent_binary;
     if (runtimeTomlConfig.min_iterations !== undefined)
       minIterations = runtimeTomlConfig.min_iterations;
     if (runtimeTomlConfig.max_iterations !== undefined)
@@ -4521,6 +4580,13 @@ ${newEntry}`);
         process.exit(1);
       }
       agentType = val;
+    } else if (arg === "--agent-binary") {
+      const val = args[++i];
+      if (!val) {
+        console.error("Error: --agent-binary requires a path or binary name");
+        process.exit(1);
+      }
+      agentBinary = val;
     } else if (arg === "--min-iterations") {
       const val = args[++i];
       if (!val || isNaN(parseInt(val))) {
@@ -4764,6 +4830,10 @@ ${newEntry}`);
   } else if (!AGENTS[agentType]) {
     console.error(`Error: --agent requires one of: ${Object.keys(AGENTS).join(", ")}`);
     process.exit(1);
+  }
+  if (agentBinary) {
+    const resolved = resolveCommand(agentBinary);
+    AGENTS[agentType] = { ...AGENTS[agentType], command: resolved };
   }
   if (promptFile) {
     promptSource = promptFile;
@@ -6260,6 +6330,7 @@ export {
   resolveInjectPlaceholders,
   resolveConfigRelativePath,
   resolveCommand,
+  resolveAgentBinary,
   normalizeRuntimeConfigValue2 as normalizeRuntimeConfigValue,
   loadRuntimeTomlConfig,
   loadRulesToml,
